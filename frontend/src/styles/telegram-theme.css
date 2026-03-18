@@ -1,0 +1,366 @@
+/* ── Telegram Theme Integration ──────────────────────────────── */
+/* Uses Telegram CSS variables for native look & feel */
+
+:root {
+  --app-bg: var(--tg-theme-bg-color, #ffffff);
+  --app-text: var(--tg-theme-text-color, #000000);
+  --app-hint: var(--tg-theme-hint-color, #999999);
+  --app-link: var(--tg-theme-link-color, #2481cc);
+  --app-button: var(--tg-theme-button-color, #2481cc);
+  --app-button-text: var(--tg-theme-button-text-color, #ffffff);
+  --app-secondary-bg: var(--tg-theme-secondary-bg-color, #f0f0f0);
+  --app-header-bg: var(--tg-theme-header-bg-color, #ffffff);
+  --app-section-bg: var(--tg-theme-section-bg-color, #ffffff);
+  --app-section-header: var(--tg-theme-section-header-text-color, #6d6d72);
+  --app-subtitle: var(--tg-theme-subtitle-text-color, #999999);
+  --app-destructive: var(--tg-theme-destructive-text-color, #ff3b30);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  background-color: var(--app-bg);
+  color: var(--app-text);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+
+/* ── Layout ──────────────────────────────────────────────────── */
+
+.app-container {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  max-width: 100vw;
+  padding-bottom: 80px; /* Space for input bar */
+}
+
+/* ── Section Groups ──────────────────────────────────────────── */
+
+.section-group {
+  margin-bottom: 8px;
+}
+
+.section-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background-color: var(--app-secondary-bg);
+  color: var(--app-section-header);
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: grab;
+}
+
+.section-header .drag-handle {
+  opacity: 0.4;
+  font-size: 16px;
+  cursor: grab;
+}
+
+/* ── Grocery Item ────────────────────────────────────────────── */
+
+.grocery-item {
+  display: flex;
+  align-items: center;
+  padding: 12px 16px;
+  background-color: var(--app-section-bg);
+  border-bottom: 0.5px solid var(--app-secondary-bg);
+  gap: 12px;
+  transition: opacity 0.2s ease;
+}
+
+.grocery-item.scratched {
+  opacity: 0.5;
+}
+
+.grocery-item .item-checkbox {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid var(--app-hint);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.grocery-item .item-checkbox.checked {
+  background-color: var(--app-button);
+  border-color: var(--app-button);
+  color: var(--app-button-text);
+}
+
+.grocery-item .item-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.grocery-item .item-name {
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 1.3;
+}
+
+.grocery-item.scratched .item-name {
+  text-decoration: line-through;
+  color: var(--app-hint);
+}
+
+.grocery-item .item-meta {
+  font-size: 12px;
+  color: var(--app-subtitle);
+  margin-top: 2px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.grocery-item .item-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.grocery-item .edit-btn {
+  background: none;
+  border: none;
+  color: var(--app-hint);
+  font-size: 18px;
+  cursor: pointer;
+  padding: 4px;
+}
+
+/* ── Input Bar ───────────────────────────────────────────────── */
+
+.input-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background-color: var(--app-section-bg);
+  border-top: 0.5px solid var(--app-secondary-bg);
+  padding: 8px 12px;
+  z-index: 100;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.input-bar input {
+  flex: 1;
+  padding: 10px 14px;
+  border-radius: 20px;
+  border: 1px solid var(--app-secondary-bg);
+  background-color: var(--app-secondary-bg);
+  color: var(--app-text);
+  font-size: 16px;
+  outline: none;
+}
+
+.input-bar input::placeholder {
+  color: var(--app-hint);
+}
+
+.input-bar input:focus {
+  border-color: var(--app-button);
+}
+
+.input-bar .send-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background-color: var(--app-button);
+  color: var(--app-button-text);
+  border: none;
+  font-size: 18px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+/* ── Suggestion Menu ─────────────────────────────────────────── */
+
+.suggestion-menu {
+  position: fixed;
+  bottom: 60px;
+  left: 12px;
+  right: 12px;
+  background-color: var(--app-section-bg);
+  border-radius: 12px;
+  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.15);
+  max-height: 240px;
+  overflow-y: auto;
+  z-index: 101;
+}
+
+.suggestion-item {
+  padding: 12px 16px;
+  border-bottom: 0.5px solid var(--app-secondary-bg);
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.suggestion-item:last-child {
+  border-bottom: none;
+}
+
+.suggestion-item:active {
+  background-color: var(--app-secondary-bg);
+}
+
+.suggestion-item .suggestion-name {
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.suggestion-item .suggestion-meta {
+  font-size: 12px;
+  color: var(--app-subtitle);
+  text-align: right;
+}
+
+/* ── Item Detail Modal ───────────────────────────────────────── */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  z-index: 200;
+  display: flex;
+  align-items: flex-end;
+}
+
+.modal-drawer {
+  background-color: var(--app-section-bg);
+  border-radius: 16px 16px 0 0;
+  width: 100%;
+  max-height: 80vh;
+  overflow-y: auto;
+  padding: 20px 16px;
+  animation: slideUp 0.3s ease;
+}
+
+@keyframes slideUp {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+.modal-drawer .modal-handle {
+  width: 36px;
+  height: 4px;
+  background-color: var(--app-hint);
+  border-radius: 2px;
+  margin: 0 auto 16px;
+}
+
+.modal-drawer h3 {
+  font-size: 18px;
+  margin-bottom: 16px;
+}
+
+.modal-drawer .form-group {
+  margin-bottom: 16px;
+}
+
+.modal-drawer label {
+  display: block;
+  font-size: 13px;
+  color: var(--app-subtitle);
+  margin-bottom: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.modal-drawer input,
+.modal-drawer textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--app-secondary-bg);
+  background-color: var(--app-secondary-bg);
+  color: var(--app-text);
+  font-size: 16px;
+  outline: none;
+}
+
+.modal-drawer textarea {
+  resize: vertical;
+  min-height: 60px;
+}
+
+.modal-drawer .modal-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.modal-drawer .btn {
+  flex: 1;
+  padding: 12px;
+  border-radius: 10px;
+  border: none;
+  font-size: 16px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.modal-drawer .btn-primary {
+  background-color: var(--app-button);
+  color: var(--app-button-text);
+}
+
+.modal-drawer .btn-secondary {
+  background-color: var(--app-secondary-bg);
+  color: var(--app-text);
+}
+
+.modal-drawer .btn-danger {
+  background-color: var(--app-destructive);
+  color: #ffffff;
+}
+
+/* ── Empty State ─────────────────────────────────────────────── */
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  color: var(--app-hint);
+  text-align: center;
+}
+
+.empty-state .emoji {
+  font-size: 48px;
+  margin-bottom: 16px;
+}
+
+.empty-state p {
+  font-size: 16px;
+  line-height: 1.5;
+}

@@ -1,0 +1,73 @@
+# =============================================================================
+# Hopper Shopper – Production Docker Compose
+# =============================================================================
+# Usage on Synology NAS:
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# Images are pulled from Docker Hub (udidg/hopper-shopper-*).
+# Synology Reverse Proxy handles SSL and forwards to nginx on port 8080.
+# =============================================================================
+
+services:
+  # ── Reverse Proxy (internal routing) ──────────────────────────────
+  nginx:
+    image: nginx:1.25-alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx/nginx.prod.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - backend
+      - frontend
+    restart: unless-stopped
+    networks:
+      - hopper-net
+
+  # ── Backend ────────────────────────────────────────────────────────
+  backend:
+    image: udidg/hopper-shopper-backend:latest
+    env_file:
+      - .env
+    expose:
+      - "8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - hopper-net
+
+  # ── Frontend ───────────────────────────────────────────────────────
+  frontend:
+    image: udidg/hopper-shopper-frontend:latest
+    expose:
+      - "80"
+    restart: unless-stopped
+    networks:
+      - hopper-net
+
+  # ── Database ───────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    env_file:
+      - .env
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - hopper-net
+
+volumes:
+  pgdata:
+    driver: local
+
+networks:
+  hopper-net:
+    driver: bridge
