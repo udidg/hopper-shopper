@@ -50,10 +50,14 @@ def validate_telegram_init_data(init_data: str) -> dict | None:
     ).hexdigest()
 
     if not hmac.compare_digest(computed_hash, received_hash):
+        token = settings.telegram_bot_token
         logger.warning(
-            "Hash mismatch: computed=%s received=%s",
+            "Hash mismatch: computed=%s received=%s | token_len=%d token_start=%s | keys=%s",
             computed_hash[:16] + "...",
             received_hash[:16] + "...",
+            len(token),
+            token[:15] + "...",
+            sorted(parsed.keys()),
         )
         return None
 
