@@ -1,7 +1,5 @@
 """Authentication router – Telegram initData validation."""
 
-import logging
-
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,8 +8,6 @@ from app.database import get_db
 from app.models.user import User
 from app.schemas.user import AuthResponse, TelegramAuthRequest, UserResponse
 from app.services.auth import create_access_token, validate_telegram_init_data
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
