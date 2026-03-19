@@ -1,5 +1,6 @@
 """Telegram initData validation and JWT token management."""
 
+import base64
 import hashlib
 import hmac
 import json
@@ -13,127 +14,117 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Telegram's public key for Ed25519 signature verification
+# From: https://core.telegram.org/bots/webapps#validating-data-for-third-party-use
+TELEGRAM_PUBLIC_KEY_PEM = """-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAxBmr1v2hEb/xyRiSGf5MrjfEo1DnFBBEiLAECWFMbCQ=
+-----END PUBLIC KEY-----"""
 
-def _try_hmac_validation(
-    data_check_string: str,
-    received_hash: str,
-    token: str,
-    method_name: str,
-) -> bool:
-    """Try HMAC-SHA256 validation with both possible key/msg orderings."""
 
-    # Method A: key="WebAppData", msg=token (common in online examples)
-    secret_a = hmac.new(
+def _validate_via_signature(init_data: str, parsed: dict, signature_b64: str) -> bool:
+    """
+    Validate using Ed25519 signature (new Telegram method).
+    
+    The data-check-string is:
+    <bot_id>:WebAppData\n<sorted key=value pairs excluding hash and signature>
+    """
+    try:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+        from cryptography.hazmat.primitives.serialization import load_pem_public_key
+    except ImportError:
+        logger.warning("cryptography library not available for Ed25519 validation")
+        return False
+
+    try:
+        bot_id = settings.telegram_bot_token.split(":")[0]
+        
+        # Build data-check-string with bot_id:WebAppData prefix
+        sorted_pairs = "\n".join(
+            f"{k}={v}" for k, v in sorted(parsed.items())
+        )
+        data_check_string = f"{bot_id}:WebAppData\n{sorted_pairs}"
+        
+        # Decode the base64url signature
+        # Add padding if needed
+        sig_padded = signature_b64 + "=" * (4 - len(signature_b64) % 4) if len(signature_b64) % 4 else signature_b64
+        signature_bytes = base64.urlsafe_b64decode(sig_padded)
+        
+        # Load the public key
+        public_key = load_pem_public_key(TELEGRAM_PUBLIC_KEY_PEM.encode())
+        
+        # Verify the signature
+        public_key.verify(signature_bytes, data_check_string.encode())
+        
+        logger.info("Telegram initData validated successfully via Ed25519 signature")
+        return True
+    except Exception as e:
+        logger.debug("Ed25519 signature validation failed: %s", str(e))
+        return False
+
+
+def _validate_via_hmac(data_check_string: str, received_hash: str, token: str) -> bool:
+    """Validate using HMAC-SHA256 hash (classic Telegram method)."""
+    # Standard method: secret_key = HMAC_SHA256("WebAppData", <bot_token>)
+    secret_key = hmac.new(
         b"WebAppData", token.encode(), hashlib.sha256
     ).digest()
-    hash_a = hmac.new(
-        secret_a, data_check_string.encode(), hashlib.sha256
+    computed_hash = hmac.new(
+        secret_key, data_check_string.encode(), hashlib.sha256
     ).hexdigest()
 
-    if hmac.compare_digest(hash_a, received_hash):
-        logger.info("Validated via %s (key=WebAppData, msg=token)", method_name)
+    if hmac.compare_digest(computed_hash, received_hash):
+        logger.info("Telegram initData validated successfully via HMAC hash")
         return True
 
-    # Method B: key=token, msg="WebAppData" (literal reading of Telegram docs)
-    secret_b = hmac.new(
-        token.encode(), b"WebAppData", hashlib.sha256
-    ).digest()
-    hash_b = hmac.new(
-        secret_b, data_check_string.encode(), hashlib.sha256
-    ).hexdigest()
-
-    if hmac.compare_digest(hash_b, received_hash):
-        logger.info("Validated via %s (key=token, msg=WebAppData)", method_name)
-        return True
-
-    logger.debug(
-        "%s failed: hash_a=%s hash_b=%s received=%s",
-        method_name,
-        hash_a[:16],
-        hash_b[:16],
-        received_hash[:16],
-    )
     return False
 
 
 def validate_telegram_init_data(init_data: str) -> dict | None:
     """
-    Validate Telegram Web App initData hash.
+    Validate Telegram Web App initData.
+
+    Supports both validation methods:
+    1. Ed25519 signature (new, recommended by Telegram)
+    2. HMAC-SHA256 hash (classic method)
 
     See: https://core.telegram.org/bots/webapps#validating-data-received-via-the-mini-app
-
-    Tries multiple validation strategies to handle different Telegram SDK versions:
-    1. URL-decoded values (standard parse_qsl)
-    2. Raw URL-encoded values (split on & and =)
 
     Returns the parsed user dict if valid, None otherwise.
     """
     token = settings.telegram_bot_token
 
-    # === Parse with URL decoding (standard method) ===
+    # Parse the raw query string into key=value pairs (URL-decoded)
     parsed = dict(urllib.parse.parse_qsl(init_data, keep_blank_values=True))
 
     received_hash = parsed.pop("hash", None)
-    if not received_hash:
-        logger.warning("No hash found in initData")
-        return None
+    signature = parsed.pop("signature", None)
 
-    # Remove fields not part of hash computation
-    parsed.pop("signature", None)
+    # === Method 1: Ed25519 signature validation (preferred) ===
+    if signature:
+        if _validate_via_signature(init_data, parsed, signature):
+            user_data = parsed.get("user")
+            if user_data:
+                return json.loads(user_data)
+            return None
 
-    # Build data-check-string from decoded values (sorted)
-    decoded_dcs = "\n".join(
-        f"{k}={v}" for k, v in sorted(parsed.items())
-    )
+    # === Method 2: HMAC-SHA256 hash validation (classic) ===
+    if received_hash:
+        # Build data-check-string (sorted key=value pairs, URL-decoded)
+        data_check_string = "\n".join(
+            f"{k}={v}" for k, v in sorted(parsed.items())
+        )
 
-    # Try decoded values
-    if _try_hmac_validation(decoded_dcs, received_hash, token, "decoded"):
-        user_data = parsed.get("user")
-        if user_data:
-            return json.loads(user_data)
-        return None
-
-    # === Parse WITHOUT URL decoding (raw values) ===
-    raw_pairs = {}
-    for part in init_data.split("&"):
-        if "=" in part:
-            k, v = part.split("=", 1)
-            raw_pairs[k] = v
-
-    raw_hash = raw_pairs.pop("hash", None)
-    raw_pairs.pop("signature", None)
-
-    raw_dcs = "\n".join(
-        f"{k}={v}" for k, v in sorted(raw_pairs.items())
-    )
-
-    # Try raw values
-    if raw_hash and _try_hmac_validation(raw_dcs, raw_hash, token, "raw"):
-        user_data = parsed.get("user")  # Use decoded for JSON parsing
-        if user_data:
-            return json.loads(user_data)
-        return None
-
-    # === Try with bot_id:WebAppData prefix (new Telegram format) ===
-    bot_id = token.split(":")[0]
-    prefixed_decoded_dcs = f"{bot_id}:WebAppData\n{decoded_dcs}"
-    prefixed_raw_dcs = f"{bot_id}:WebAppData\n{raw_dcs}"
-
-    if _try_hmac_validation(prefixed_decoded_dcs, received_hash, token, "prefixed-decoded"):
-        user_data = parsed.get("user")
-        if user_data:
-            return json.loads(user_data)
-        return None
-
-    if raw_hash and _try_hmac_validation(prefixed_raw_dcs, raw_hash, token, "prefixed-raw"):
-        user_data = parsed.get("user")
-        if user_data:
-            return json.loads(user_data)
-        return None
+        if _validate_via_hmac(data_check_string, received_hash, token):
+            user_data = parsed.get("user")
+            if user_data:
+                return json.loads(user_data)
+            return None
 
     logger.warning(
-        "All validation methods failed | token_len=%d | decoded_keys=%s",
+        "All validation methods failed | token_len=%d | has_signature=%s | has_hash=%s | keys=%s",
         len(token),
+        bool(signature),
+        bool(received_hash),
         sorted(parsed.keys()),
     )
     return None
