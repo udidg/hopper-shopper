@@ -19,16 +19,27 @@ def validate_telegram_init_data(init_data: str) -> dict | None:
 
     Returns the parsed user dict if valid, None otherwise.
     """
+    import logging
+
+    logger = logging.getLogger(__name__)
+
     parsed = dict(urllib.parse.parse_qsl(init_data, keep_blank_values=True))
 
     received_hash = parsed.pop("hash", None)
     if not received_hash:
+        logger.warning("No hash found in initData")
         return None
+
+    # Remove 'signature' field – it's not part of the hash computation
+    # (added by Telegram in newer API versions)
+    parsed.pop("signature", None)
 
     # Build the data-check-string (sorted key=value pairs)
     data_check_string = "\n".join(
         f"{k}={v}" for k, v in sorted(parsed.items())
     )
+
+    logger.info("Data-check-string keys: %s", sorted(parsed.keys()))
 
     # Compute HMAC-SHA256
     secret_key = hmac.new(
@@ -39,7 +50,14 @@ def validate_telegram_init_data(init_data: str) -> dict | None:
     ).hexdigest()
 
     if not hmac.compare_digest(computed_hash, received_hash):
+        logger.warning(
+            "Hash mismatch: computed=%s received=%s",
+            computed_hash[:16] + "...",
+            received_hash[:16] + "...",
+        )
         return None
+
+    logger.info("Telegram initData validated successfully")
 
     # Parse the user JSON from initData
     user_data = parsed.get("user")
