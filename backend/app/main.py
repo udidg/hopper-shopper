@@ -23,11 +23,19 @@ async def lifespan(app: FastAPI):
     await engine.dispose()
 
 
+import os
+
+# Disable docs/openapi in production
+_is_production = os.getenv("ENVIRONMENT", "production") == "production"
+
 app = FastAPI(
     title="Hopper Shopper",
     description="Collaborative grocery list Telegram Mini App",
     version="0.1.0",
     lifespan=lifespan,
+    docs_url=None if _is_production else "/docs",
+    redoc_url=None if _is_production else "/redoc",
+    openapi_url=None if _is_production else "/openapi.json",
 )
 
 # ── CORS ─────────────────────────────────────────────────────────
