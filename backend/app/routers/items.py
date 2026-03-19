@@ -15,7 +15,7 @@ from app.schemas.grocery_item import (
     ItemUpdateRequest,
     SortRequest,
 )
-from app.services.grouping import guess_category
+from app.services.grouping import guess_category_smart
 from app.services.suggestion import upsert_dictionary_entry
 
 router = APIRouter(prefix="/api", tags=["items"])
@@ -73,8 +73,8 @@ async def add_item(
     """Add an item to a list with auto-grouping."""
     await _check_membership(db, user.id, list_id)
 
-    # Auto-grouping: use provided category, or guess from name
-    category = body.category or guess_category(body.name)
+    # Auto-grouping: use provided category, or guess from name (with LLM fallback)
+    category = body.category or await guess_category_smart(body.name)
 
     # Determine sort_order (append to end)
     max_order = await db.execute(

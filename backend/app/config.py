@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     # CORS
     cors_origins: str = "*"
 
+    # Ollama LLM (optional – for department classification)
+    ollama_url: str = ""  # e.g. "http://ollama:11434"
+    ollama_model: str = "gemma3:1b"
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

@@ -46,6 +46,12 @@ export interface Suggestion {
   default_category: string | null;
   last_observed_price: number | null;
   preferred_store: string | null;
+  source?: "user" | "global";
+}
+
+export interface Department {
+  name: string | null;
+  name_he: string | null;
 }
 
 export interface ItemCreatePayload {

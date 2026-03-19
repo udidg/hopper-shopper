@@ -21,3 +21,6 @@ websockets==14.1
 
 # CORS
 python-multipart==0.0.20
+
+# HTTP client (for Ollama LLM calls)
+httpx==0.28.1

@@ -65,8 +65,21 @@ services:
     networks:
       - hopper-net
 
+  # ── Ollama LLM (optional – for department classification) ──────
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama_data:/root/.ollama
+    expose:
+      - "11434"
+    restart: unless-stopped
+    networks:
+      - hopper-net
+
 volumes:
   pgdata:
+    driver: local
+  ollama_data:
     driver: local
 
 networks:

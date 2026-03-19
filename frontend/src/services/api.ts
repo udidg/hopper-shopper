@@ -2,6 +2,7 @@
 
 import axios from "axios";
 import type {
+  Department,
   GroceryItem,
   GroceryList,
   ItemCreatePayload,
@@ -90,6 +91,15 @@ export async function sortItems(itemIds: number[]): Promise<void> {
 
 export async function getSuggestions(query: string): Promise<Suggestion[]> {
   const { data } = await api.get("/suggestions", { params: { q: query } });
+  return data;
+}
+
+/* ── Departments ──────────────────────────────────────────────── */
+
+export async function getDepartments(query: string = ""): Promise<Department[]> {
+  const { data } = await api.get("/suggestions/departments", {
+    params: { q: query },
+  });
   return data;
 }
 

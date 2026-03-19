@@ -1,8 +1,9 @@
 /* ── ItemDetailModal – Edit drawer for item details ───────────── */
 
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useListStore } from "@/stores/useListStore";
-import type { GroceryItem } from "@/types";
+import { useDepartments } from "@/hooks/useDepartments";
+import type { GroceryItem, Department } from "@/types";
 
 interface Props {
   item: GroceryItem;
@@ -11,6 +12,11 @@ interface Props {
 
 export function ItemDetailModal({ item, onClose }: Props) {
   const { updateItem, deleteItem } = useListStore();
+  const {
+    query: deptQuery,
+    setQuery: setDeptQuery,
+    departments,
+  } = useDepartments();
 
   const [name, setName] = useState(item.name);
   const [category, setCategory] = useState(item.category || "");
@@ -19,6 +25,23 @@ export function ItemDetailModal({ item, onClose }: Props) {
   const [price, setPrice] = useState(
     item.last_observed_price?.toString() || ""
   );
+  const [showDeptDropdown, setShowDeptDropdown] = useState(false);
+  const deptInputRef = useRef<HTMLInputElement>(null);
+
+  // Sync category input with department query
+  useEffect(() => {
+    setDeptQuery(category);
+  }, [category, setDeptQuery]);
+
+  const handleSelectDepartment = (dept: Department) => {
+    // Use Hebrew name if available and the current category looks Hebrew,
+    // otherwise use English name
+    const isHebrew = /[\u0590-\u05FF]/.test(category);
+    const selectedName =
+      isHebrew && dept.name_he ? dept.name_he : dept.name || dept.name_he || "";
+    setCategory(selectedName);
+    setShowDeptDropdown(false);
+  };
 
   const handleSave = async () => {
     await updateItem(item.id, {
@@ -51,13 +74,40 @@ export function ItemDetailModal({ item, onClose }: Props) {
           />
         </div>
 
-        <div className="form-group">
+        <div className="form-group dept-autocomplete">
           <label>Category (Store Section)</label>
           <input
+            ref={deptInputRef}
             value={category}
-            onChange={(e) => setCategory(e.target.value)}
-            placeholder="e.g. Produce, Dairy, Cleaning"
+            onChange={(e) => {
+              setCategory(e.target.value);
+              setShowDeptDropdown(true);
+            }}
+            onFocus={() => setShowDeptDropdown(true)}
+            onBlur={() => {
+              // Delay to allow click on dropdown item
+              setTimeout(() => setShowDeptDropdown(false), 200);
+            }}
+            placeholder="e.g. Produce, Dairy, ירקות ופירות"
+            autoComplete="off"
           />
+          {showDeptDropdown && departments.length > 0 && (
+            <div className="dept-dropdown">
+              {departments.map((dept, idx) => (
+                <div
+                  key={idx}
+                  className="dept-dropdown-item"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => handleSelectDepartment(dept)}
+                >
+                  <span className="dept-name-en">{dept.name}</span>
+                  {dept.name_he && (
+                    <span className="dept-name-he">{dept.name_he}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="form-group">

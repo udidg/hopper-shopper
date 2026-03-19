@@ -188,12 +188,17 @@ body {
   background-color: var(--app-button);
   color: var(--app-button-text);
   border: none;
-  font-size: 18px;
+  font-size: 20px;
+  font-weight: 300;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  line-height: 1;
+  padding: 0;
+  /* Optical centering: the + glyph sits slightly high in most fonts */
+  padding-top: 1px;
 }
 
 /* ── Suggestion Menu ─────────────────────────────────────────── */
@@ -363,4 +368,55 @@ body {
 .empty-state p {
   font-size: 16px;
   line-height: 1.5;
+}
+
+/* ── Department Autocomplete ─────────────────────────────────── */
+
+.dept-autocomplete {
+  position: relative;
+}
+
+.dept-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  background-color: var(--app-section-bg);
+  border: 1px solid var(--app-secondary-bg);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+  max-height: 180px;
+  overflow-y: auto;
+  z-index: 210;
+  margin-top: 4px;
+}
+
+.dept-dropdown-item {
+  padding: 10px 12px;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 0.5px solid var(--app-secondary-bg);
+  transition: background-color 0.15s ease;
+}
+
+.dept-dropdown-item:last-child {
+  border-bottom: none;
+}
+
+.dept-dropdown-item:active {
+  background-color: var(--app-secondary-bg);
+}
+
+.dept-dropdown-item .dept-name-en {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--app-text);
+}
+
+.dept-dropdown-item .dept-name-he {
+  font-size: 13px;
+  color: var(--app-subtitle);
+  direction: rtl;
 }

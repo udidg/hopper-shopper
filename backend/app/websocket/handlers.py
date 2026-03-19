@@ -11,7 +11,7 @@ from app.database import async_session
 from app.models.grocery_item import GroceryItem
 from app.models.list_member import ListMember
 from app.services.auth import decode_access_token
-from app.services.grouping import guess_category
+from app.services.grouping import guess_category_smart
 from app.services.suggestion import upsert_dictionary_entry
 from app.websocket.manager import manager
 
@@ -168,7 +168,7 @@ async def _handle_add_item(
     if not name:
         return {"error": "Missing 'name'"}
 
-    category = data.get("category") or guess_category(name)
+    category = data.get("category") or await guess_category_smart(name)
 
     # Get next sort order
     max_order = await db.execute(
