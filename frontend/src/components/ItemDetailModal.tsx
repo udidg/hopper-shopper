@@ -1,6 +1,6 @@
 /* ── ItemDetailModal – Edit drawer for item details ───────────── */
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { useListStore } from "@/stores/useListStore";
 import { useDepartments } from "@/hooks/useDepartments";
 import type { GroceryItem, Department } from "@/types";
@@ -11,7 +11,7 @@ interface Props {
 }
 
 export function ItemDetailModal({ item, onClose }: Props) {
-  const { updateItem, deleteItem } = useListStore();
+  const { items, updateItem, deleteItem, reorderItems } = useListStore();
   const {
     setQuery: setDeptQuery,
     departments,
@@ -32,8 +32,59 @@ export function ItemDetailModal({ item, onClose }: Props) {
     setDeptQuery(category);
   }, [category, setDeptQuery]);
 
+  // Get all unique categories for move-to-category
+  const allCategories = useMemo(() => {
+    const cats = new Set<string>();
+    for (const i of items) {
+      if (i.category) cats.add(i.category);
+    }
+    return Array.from(cats).sort();
+  }, [items]);
+
+  // Get sibling items in same category for reordering
+  const siblings = useMemo(() => {
+    return items
+      .filter((i) => (i.category || "Other") === (item.category || "Other"))
+      .sort((a, b) => {
+        if (a.is_scratched !== b.is_scratched) return a.is_scratched ? 1 : -1;
+        return a.sort_order - b.sort_order;
+      });
+  }, [items, item.category]);
+
+  const currentIndex = siblings.findIndex((i) => i.id === item.id);
+  const canMoveUp = currentIndex > 0;
+  const canMoveDown = currentIndex < siblings.length - 1;
+
+  const handleMoveUp = async () => {
+    if (!canMoveUp) return;
+    const newSiblings = [...siblings];
+    [newSiblings[currentIndex - 1], newSiblings[currentIndex]] = [
+      newSiblings[currentIndex],
+      newSiblings[currentIndex - 1],
+    ];
+    // Build full reorder: replace this category's items in global order
+    const otherItems = items.filter(
+      (i) => (i.category || "Other") !== (item.category || "Other")
+    );
+    const allIds = [...otherItems, ...newSiblings].map((i) => i.id);
+    await reorderItems(allIds);
+  };
+
+  const handleMoveDown = async () => {
+    if (!canMoveDown) return;
+    const newSiblings = [...siblings];
+    [newSiblings[currentIndex], newSiblings[currentIndex + 1]] = [
+      newSiblings[currentIndex + 1],
+      newSiblings[currentIndex],
+    ];
+    const otherItems = items.filter(
+      (i) => (i.category || "Other") !== (item.category || "Other")
+    );
+    const allIds = [...otherItems, ...newSiblings].map((i) => i.id);
+    await reorderItems(allIds);
+  };
+
   const handleSelectDepartment = (dept: Department) => {
-    // Always use Hebrew name for categories
     const selectedName = dept.name_he || dept.name || "";
     setCategory(selectedName);
     setShowDeptDropdown(false);
@@ -81,7 +132,6 @@ export function ItemDetailModal({ item, onClose }: Props) {
             }}
             onFocus={() => setShowDeptDropdown(true)}
             onBlur={() => {
-              // Delay to allow click on dropdown item
               setTimeout(() => setShowDeptDropdown(false), 200);
             }}
             placeholder="e.g. Produce, Dairy, ירקות ופירות"
@@ -105,6 +155,26 @@ export function ItemDetailModal({ item, onClose }: Props) {
             </div>
           )}
         </div>
+
+        {/* Quick move to existing category */}
+        {allCategories.length > 1 && (
+          <div className="form-group">
+            <label>Move to Category</label>
+            <div className="category-chips">
+              {allCategories.map((cat) => (
+                <button
+                  key={cat}
+                  className={`category-move-chip ${
+                    cat === (item.category || "Other") ? "active" : ""
+                  }`}
+                  onClick={() => setCategory(cat)}
+                >
+                  {cat}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div className="form-group">
           <label>Additional Info</label>
@@ -133,6 +203,27 @@ export function ItemDetailModal({ item, onClose }: Props) {
             onChange={(e) => setPrice(e.target.value)}
             placeholder="0.00"
           />
+        </div>
+
+        {/* Reorder controls */}
+        <div className="form-group">
+          <label>Reorder in Section</label>
+          <div className="reorder-controls">
+            <button
+              className="btn btn-secondary reorder-btn"
+              onClick={handleMoveUp}
+              disabled={!canMoveUp}
+            >
+              ↑ Move Up
+            </button>
+            <button
+              className="btn btn-secondary reorder-btn"
+              onClick={handleMoveDown}
+              disabled={!canMoveDown}
+            >
+              ↓ Move Down
+            </button>
+          </div>
         </div>
 
         <div className="modal-actions">

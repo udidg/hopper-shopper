@@ -1,68 +1,12 @@
-/* ── GroceryList – Main view with multi-container drag & drop ── */
+/* ── GroceryList – Main view with grouped items ──────────────── */
 
-import { useMemo, useState, useCallback } from "react";
-import {
-  DndContext,
-  DragOverlay,
-  closestCorners,
-  PointerSensor,
-  TouchSensor,
-  useSensor,
-  useSensors,
-  type DragStartEvent,
-  type DragOverEvent,
-  type DragEndEvent,
-} from "@dnd-kit/core";
-import { arrayMove } from "@dnd-kit/sortable";
+import { useMemo } from "react";
 import { useListStore } from "@/stores/useListStore";
 import { SectionGroup } from "./SectionGroup";
 import type { GroceryItem } from "@/types";
 
-/** Extract the numeric item ID from a sortable id like "item-42" */
-function parseItemId(id: string | number): number | null {
-  const str = String(id);
-  if (str.startsWith("item-")) {
-    return parseInt(str.slice(5), 10);
-  }
-  return null;
-}
-
-/** Extract the category name from a droppable id like "section-Dairy" */
-function parseSectionCategory(id: string | number): string | null {
-  const str = String(id);
-  if (str.startsWith("section-")) {
-    return str.slice(8);
-  }
-  return null;
-}
-
-/** Find which category section an item belongs to */
-function findContainerCategory(
-  itemId: string | number,
-  sections: { category: string; items: GroceryItem[] }[]
-): string | null {
-  const numId = parseItemId(itemId);
-  if (numId == null) return null;
-  for (const section of sections) {
-    if (section.items.some((i) => i.id === numId)) {
-      return section.category;
-    }
-  }
-  return null;
-}
-
 export function GroceryList() {
-  const { items, isLoading, reorderItems, moveItemToCategory } =
-    useListStore();
-
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
-    useSensor(TouchSensor, {
-      activationConstraint: { delay: 200, tolerance: 5 },
-    })
-  );
-
-  const [activeItem, setActiveItem] = useState<GroceryItem | null>(null);
+  const { items, isLoading } = useListStore();
 
   // Group items by category
   const grouped = useMemo(() => {
@@ -102,87 +46,6 @@ export function GroceryList() {
     return sections;
   }, [items]);
 
-  const handleDragStart = useCallback(
-    (event: DragStartEvent) => {
-      const { active } = event;
-      const numId = parseItemId(active.id);
-      if (numId != null) {
-        const item = items.find((i) => i.id === numId);
-        setActiveItem(item ?? null);
-      }
-    },
-    [items]
-  );
-
-  const handleDragOver = useCallback(
-    (_event: DragOverEvent) => {
-      // Visual feedback is handled by the isOver state in SectionGroup
-      // Actual move happens on DragEnd
-    },
-    []
-  );
-
-  const handleDragEnd = useCallback(
-    (event: DragEndEvent) => {
-      const { active, over } = event;
-      setActiveItem(null);
-
-      if (!over) return;
-
-      const activeNumId = parseItemId(active.id);
-      if (activeNumId == null) return;
-
-      // Determine the target category
-      let targetCategory: string | null = null;
-
-      // Check if dropped on a section
-      const sectionCat = parseSectionCategory(over.id);
-      if (sectionCat != null) {
-        targetCategory = sectionCat;
-      } else {
-        // Dropped on another item — find that item's category
-        targetCategory = findContainerCategory(over.id, grouped);
-      }
-
-      // Find the source category
-      const sourceCategory = findContainerCategory(active.id, grouped);
-
-      if (targetCategory == null || sourceCategory == null) return;
-
-      if (sourceCategory !== targetCategory) {
-        // Cross-category move
-        const newCat = targetCategory === "Other" ? null : targetCategory;
-        moveItemToCategory(activeNumId, newCat);
-      } else {
-        // Same category reorder
-        const section = grouped.find((s) => s.category === sourceCategory);
-        if (!section) return;
-
-        const activeIdx = section.items.findIndex(
-          (i) => i.id === activeNumId
-        );
-        const overNumId = parseItemId(over.id);
-        const overIdx =
-          overNumId != null
-            ? section.items.findIndex((i) => i.id === overNumId)
-            : -1;
-
-        if (activeIdx !== -1 && overIdx !== -1 && activeIdx !== overIdx) {
-          const reordered = arrayMove(section.items, activeIdx, overIdx);
-          // Build full item order: replace this section's items in the global order
-          const allItemIds = grouped.flatMap((s) => {
-            if (s.category === sourceCategory) {
-              return reordered.map((i) => i.id);
-            }
-            return s.items.map((i) => i.id);
-          });
-          reorderItems(allItemIds);
-        }
-      }
-    },
-    [grouped, moveItemToCategory, reorderItems]
-  );
-
   if (isLoading && items.length === 0) {
     return (
       <div className="empty-state">
@@ -206,13 +69,7 @@ export function GroceryList() {
   }
 
   return (
-    <DndContext
-      sensors={sensors}
-      collisionDetection={closestCorners}
-      onDragStart={handleDragStart}
-      onDragOver={handleDragOver}
-      onDragEnd={handleDragEnd}
-    >
+    <div className="grocery-list-content">
       {grouped.map((section) => (
         <SectionGroup
           key={section.category}
@@ -220,16 +77,6 @@ export function GroceryList() {
           items={section.items}
         />
       ))}
-
-      <DragOverlay dropAnimation={null}>
-        {activeItem ? (
-          <div className="grocery-item drag-overlay-item">
-            <div className="item-content">
-              <div className="item-name">{activeItem.name}</div>
-            </div>
-          </div>
-        ) : null}
-      </DragOverlay>
-    </DndContext>
+    </div>
   );
 }

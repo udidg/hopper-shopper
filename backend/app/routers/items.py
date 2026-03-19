@@ -172,6 +172,33 @@ async def delete_item(
     await db.delete(item)
 
 
+@router.delete(
+    "/lists/{list_id}/items/scratched",
+    status_code=status.HTTP_200_OK,
+)
+async def archive_scratched_items(
+    list_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Bulk-delete all scratched (bought) items from a list."""
+    await _check_membership(db, user.id, list_id)
+
+    result = await db.execute(
+        select(GroceryItem).where(
+            GroceryItem.list_id == list_id,
+            GroceryItem.is_scratched == True,  # noqa: E712
+        )
+    )
+    scratched_items = result.scalars().all()
+    count = len(scratched_items)
+
+    for item in scratched_items:
+        await db.delete(item)
+
+    return {"status": "ok", "archived_count": count}
+
+
 @router.put("/items/sort", status_code=status.HTTP_200_OK)
 async def sort_items(
     body: SortRequest,

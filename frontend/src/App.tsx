@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { useListStore } from "@/stores/useListStore";
 import { useWebSocket } from "@/hooks/useWebSocket";
+import { ListHeader } from "@/components/ListHeader";
 import { GroceryList } from "@/components/GroceryList";
 import { InputBar } from "@/components/InputBar";
 
@@ -106,6 +107,7 @@ export default function App() {
   // ── Main view ─────────────────────────────────────────────────
   return (
     <div className="app-container">
+      <ListHeader />
       <GroceryList />
       <InputBar />
     </div>

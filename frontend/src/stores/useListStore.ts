@@ -1,13 +1,14 @@
 /* ── List & Items Store (Zustand) ────────────────────────────── */
 
 import { create } from "zustand";
-import type { GroceryItem, GroceryList } from "@/types";
+import type { GroceryItem, GroceryList, ListDetail } from "@/types";
 import * as api from "@/services/api";
 
 interface ListState {
   /* ── State ──────────────────────────────────────────────────── */
   lists: GroceryList[];
   activeListId: number | null;
+  activeListDetail: ListDetail | null;
   items: GroceryItem[];
   isLoading: boolean;
   error: string | null;
@@ -16,6 +17,7 @@ interface ListState {
   fetchLists: () => Promise<void>;
   createList: (name: string) => Promise<GroceryList>;
   setActiveList: (listId: number) => void;
+  fetchListDetail: (listId: number) => Promise<ListDetail>;
   joinList: (code: string) => Promise<void>;
 
   /* ── Item actions ───────────────────────────────────────────── */
@@ -38,6 +40,7 @@ interface ListState {
     itemId: number,
     newCategory: string | null
   ) => Promise<void>;
+  archiveBoughtItems: () => Promise<void>;
 
   /* ── WebSocket-driven updates ───────────────────────────────── */
   wsAddItem: (item: GroceryItem) => void;
@@ -50,6 +53,7 @@ interface ListState {
 export const useListStore = create<ListState>((set, get) => ({
   lists: [],
   activeListId: null,
+  activeListDetail: null,
   items: [],
   isLoading: false,
   error: null,
@@ -73,8 +77,20 @@ export const useListStore = create<ListState>((set, get) => ({
   },
 
   setActiveList: (listId: number) => {
-    set({ activeListId: listId, items: [] });
+    set({ activeListId: listId, activeListDetail: null, items: [] });
     get().fetchItems(listId);
+    get().fetchListDetail(listId);
+  },
+
+  fetchListDetail: async (listId: number) => {
+    try {
+      const detail = await api.getList(listId);
+      set({ activeListDetail: detail });
+      return detail;
+    } catch {
+      set({ error: "Failed to fetch list details" });
+      throw new Error("Failed to fetch list details");
+    }
   },
 
   joinList: async (code: string) => {
@@ -160,6 +176,20 @@ export const useListStore = create<ListState>((set, get) => ({
       // Revert on failure — refetch
       const listId = get().activeListId;
       if (listId) get().fetchItems(listId);
+    }
+  },
+
+  archiveBoughtItems: async () => {
+    const listId = get().activeListId;
+    if (!listId) return;
+    // Optimistic: remove scratched items from UI
+    const scratched = get().items.filter((i) => i.is_scratched);
+    set((s) => ({ items: s.items.filter((i) => !i.is_scratched) }));
+    try {
+      await api.archiveScratchedItems(listId);
+    } catch {
+      // Revert on failure — re-add scratched items
+      set((s) => ({ items: [...s.items, ...scratched] }));
     }
   },
 

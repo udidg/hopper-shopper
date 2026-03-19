@@ -87,6 +87,13 @@ export async function sortItems(itemIds: number[]): Promise<void> {
   await api.put("/items/sort", { item_ids: itemIds });
 }
 
+export async function archiveScratchedItems(
+  listId: number
+): Promise<{ archived_count: number }> {
+  const { data } = await api.delete(`/lists/${listId}/items/scratched`);
+  return data;
+}
+
 /* ── Suggestions ──────────────────────────────────────────────── */
 
 export async function getSuggestions(query: string): Promise<Suggestion[]> {
