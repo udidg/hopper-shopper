@@ -13,7 +13,6 @@ interface Props {
 export function ItemDetailModal({ item, onClose }: Props) {
   const { updateItem, deleteItem } = useListStore();
   const {
-    query: deptQuery,
     setQuery: setDeptQuery,
     departments,
   } = useDepartments();
