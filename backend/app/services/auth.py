@@ -14,11 +14,10 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Telegram's public key for Ed25519 signature verification
+# Telegram's Ed25519 public keys for signature verification (raw hex)
 # From: https://core.telegram.org/bots/webapps#validating-data-for-third-party-use
-TELEGRAM_PUBLIC_KEY_PEM = """-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAxBmr1v2hEb/xyRiSGf5MrjfEo1DnFBBEiLAECWFMbCQ=
------END PUBLIC KEY-----"""
+TELEGRAM_PUBLIC_KEY_PROD = "e7bf03a2fa4602af4580703d88dda5bb59f32ed8b02a56c187fe7d34caed242d"
+TELEGRAM_PUBLIC_KEY_TEST = "40055058a4ee38156a06562e52eece92a771bcd8346a8c4615cb7376eddf72ec"
 
 
 def _validate_via_signature(init_data: str, parsed: dict, signature_b64: str) -> bool:
@@ -30,7 +29,6 @@ def _validate_via_signature(init_data: str, parsed: dict, signature_b64: str) ->
     """
     try:
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-        from cryptography.hazmat.primitives.serialization import load_pem_public_key
     except ImportError:
         logger.warning("cryptography library not available for Ed25519 validation")
         return False
@@ -44,21 +42,29 @@ def _validate_via_signature(init_data: str, parsed: dict, signature_b64: str) ->
         )
         data_check_string = f"{bot_id}:WebAppData\n{sorted_pairs}"
         
-        # Decode the base64url signature
-        # Add padding if needed
-        sig_padded = signature_b64 + "=" * (4 - len(signature_b64) % 4) if len(signature_b64) % 4 else signature_b64
-        signature_bytes = base64.urlsafe_b64decode(sig_padded)
+        # Decode the base64url signature (add padding if needed)
+        padding = 4 - len(signature_b64) % 4
+        if padding != 4:
+            signature_b64 += "=" * padding
+        signature_bytes = base64.urlsafe_b64decode(signature_b64)
         
-        # Load the public key
-        public_key = load_pem_public_key(TELEGRAM_PUBLIC_KEY_PEM.encode())
+        # Try production key first, then test key
+        for key_hex, env_name in [
+            (TELEGRAM_PUBLIC_KEY_PROD, "production"),
+            (TELEGRAM_PUBLIC_KEY_TEST, "test"),
+        ]:
+            try:
+                public_key = Ed25519PublicKey.from_public_bytes(bytes.fromhex(key_hex))
+                public_key.verify(signature_bytes, data_check_string.encode())
+                logger.info("Telegram initData validated via Ed25519 (%s key)", env_name)
+                return True
+            except Exception:
+                continue
         
-        # Verify the signature
-        public_key.verify(signature_bytes, data_check_string.encode())
-        
-        logger.info("Telegram initData validated successfully via Ed25519 signature")
-        return True
+        logger.warning("Ed25519 signature validation failed with both keys")
+        return False
     except Exception as e:
-        logger.debug("Ed25519 signature validation failed: %s", str(e))
+        logger.warning("Ed25519 signature validation error: %s", str(e))
         return False
 
 

@@ -27,7 +27,6 @@ async def authenticate_telegram(
     - If the user doesn't exist yet, create them.
     - If the user exists, update their display name / username.
     """
-    logger.warning("Raw init_data FULL: %s", repr(body.init_data))
     tg_user = validate_telegram_init_data(body.init_data)
     if tg_user is None:
         raise HTTPException(
