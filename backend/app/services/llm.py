@@ -9,6 +9,7 @@ from app.config import settings
 from app.services.grouping import (
     DEPARTMENTS_EN,
     DEPARTMENTS_HE,
+    DEPT_EN_TO_HE,
     is_hebrew,
 )
 
@@ -21,14 +22,12 @@ _OLLAMA_TIMEOUT = 10.0
 _SYSTEM_PROMPT = """You are a grocery store department classifier.
 Given a grocery item name, classify it into exactly one of these store departments.
 
-English departments: {departments_en}
 Hebrew departments: {departments_he}
 
 Rules:
-- If the item name is in Hebrew, respond with the Hebrew department name.
-- If the item name is in English, respond with the English department name.
+- ALWAYS respond with the Hebrew department name, regardless of the input language.
 - Respond with ONLY the department name, nothing else.
-- If you cannot classify the item, respond with "Other" or "אחר".
+- If you cannot classify the item, respond with "אחר".
 """
 
 
@@ -36,17 +35,15 @@ async def classify_department(item_name: str) -> Optional[str]:
     """
     Use Ollama to classify a grocery item into a store department.
 
-    Returns the department name (in the same language as the item),
+    Always returns the Hebrew department name,
     or None if the LLM is unavailable or fails.
     """
     if not settings.ollama_url:
         return None
 
-    departments_en = ", ".join(DEPARTMENTS_EN)
     departments_he = ", ".join(DEPARTMENTS_HE)
 
     system_prompt = _SYSTEM_PROMPT.format(
-        departments_en=departments_en,
         departments_he=departments_he,
     )
 
@@ -71,18 +68,20 @@ async def classify_department(item_name: str) -> Optional[str]:
             data = response.json()
             result = data.get("response", "").strip()
 
-            # Validate the result is a known department
-            if result in DEPARTMENTS_EN or result in DEPARTMENTS_HE:
+            # Validate the result is a known Hebrew department
+            if result in DEPARTMENTS_HE:
                 return result
 
             # Try partial match (LLM might add extra text)
-            result_lower = result.lower().strip()
-            for dept in DEPARTMENTS_EN:
-                if dept.lower() in result_lower:
-                    return dept
             for dept in DEPARTMENTS_HE:
                 if dept in result:
                     return dept
+
+            # If LLM returned English, translate to Hebrew
+            result_lower = result.lower().strip()
+            for dept in DEPARTMENTS_EN:
+                if dept.lower() in result_lower:
+                    return DEPT_EN_TO_HE.get(dept, dept)
 
             logger.warning(
                 "LLM returned unknown department '%s' for item '%s'",

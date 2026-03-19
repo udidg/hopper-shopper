@@ -33,11 +33,8 @@ export function ItemDetailModal({ item, onClose }: Props) {
   }, [category, setDeptQuery]);
 
   const handleSelectDepartment = (dept: Department) => {
-    // Use Hebrew name if available and the current category looks Hebrew,
-    // otherwise use English name
-    const isHebrew = /[\u0590-\u05FF]/.test(category);
-    const selectedName =
-      isHebrew && dept.name_he ? dept.name_he : dept.name || dept.name_he || "";
+    // Always use Hebrew name for categories
+    const selectedName = dept.name_he || dept.name || "";
     setCategory(selectedName);
     setShowDeptDropdown(false);
   };

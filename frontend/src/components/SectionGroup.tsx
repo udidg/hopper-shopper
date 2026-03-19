@@ -1,7 +1,10 @@
-/* ── SectionGroup – Sticky header + items for a category ─────── */
+/* ── SectionGroup – Droppable category container with sortable items ── */
 
-import { useSortable } from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
+import { useDroppable } from "@dnd-kit/core";
+import {
+  SortableContext,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
 import { GroceryItemRow } from "./GroceryItem";
 import type { GroceryItem } from "@/types";
 
@@ -11,30 +14,29 @@ interface Props {
 }
 
 export function SectionGroup({ category, items }: Props) {
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({ id: category });
+  const { setNodeRef, isOver } = useDroppable({
+    id: `section-${category}`,
+    data: { type: "section", category },
+  });
 
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.5 : 1,
-  };
+  const itemIds = items.map((item) => `item-${item.id}`);
 
   return (
-    <div ref={setNodeRef} style={style} className="section-group">
-      <div className="section-header" {...attributes} {...listeners}>
+    <div
+      ref={setNodeRef}
+      className={`section-group ${isOver ? "section-drop-target" : ""}`}
+    >
+      <div className="section-header">
         <span>{category}</span>
-        <span className="drag-handle">⠿</span>
       </div>
-      {items.map((item) => (
-        <GroceryItemRow key={item.id} item={item} />
-      ))}
+      <SortableContext items={itemIds} strategy={verticalListSortingStrategy}>
+        {items.map((item) => (
+          <GroceryItemRow key={item.id} item={item} />
+        ))}
+      </SortableContext>
+      {items.length === 0 && (
+        <div className="section-empty-drop">Drop items here</div>
+      )}
     </div>
   );
 }

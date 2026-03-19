@@ -94,6 +94,17 @@ export async function getSuggestions(query: string): Promise<Suggestion[]> {
   return data;
 }
 
+/* ── Category Suggestion ─────────────────────────────────────── */
+
+export async function getCategorySuggestion(
+  itemName: string
+): Promise<string | null> {
+  const { data } = await api.get("/suggestions/category", {
+    params: { item_name: itemName },
+  });
+  return data.category ?? null;
+}
+
 /* ── Departments ──────────────────────────────────────────────── */
 
 export async function getDepartments(query: string = ""): Promise<Department[]> {

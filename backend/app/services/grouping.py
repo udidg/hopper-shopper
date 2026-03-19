@@ -333,9 +333,7 @@ def guess_category(item_name: str) -> str | None:
     """
     Guess the store section category for an item name (sync, keyword-only).
 
-    Detects language automatically:
-    - Hebrew names are matched against HEBREW_CATEGORY_MAP → Hebrew categories
-    - English names are matched against CATEGORY_MAP → English categories
+    Always returns the Hebrew category name regardless of input language.
 
     Checks multi-word keys first (e.g., "paper towel", "תפוח אדמה"),
     then single-word. Returns None if no match is found.
@@ -343,14 +341,20 @@ def guess_category(item_name: str) -> str | None:
     name_lower = item_name.lower().strip()
 
     # Pick the right map based on detected language
-    category_map = HEBREW_CATEGORY_MAP if is_hebrew(name_lower) else CATEGORY_MAP
-
-    # Check multi-word keys first (longer keys = more specific)
-    for keyword, category in sorted(
-        category_map.items(), key=lambda x: len(x[0]), reverse=True
-    ):
-        if keyword in name_lower:
-            return category
+    if is_hebrew(name_lower):
+        # Hebrew input → Hebrew category map → already Hebrew result
+        for keyword, category in sorted(
+            HEBREW_CATEGORY_MAP.items(), key=lambda x: len(x[0]), reverse=True
+        ):
+            if keyword in name_lower:
+                return category
+    else:
+        # English input → English category map → translate to Hebrew
+        for keyword, category in sorted(
+            CATEGORY_MAP.items(), key=lambda x: len(x[0]), reverse=True
+        ):
+            if keyword in name_lower:
+                return DEPT_EN_TO_HE.get(category, category)
 
     return None
 
@@ -358,6 +362,8 @@ def guess_category(item_name: str) -> str | None:
 async def guess_category_smart(item_name: str) -> str | None:
     """
     Guess the store section category with LLM fallback (async).
+
+    Always returns the Hebrew category name.
 
     Pipeline:
     1. Try keyword-based matching (fast, no network)
@@ -376,6 +382,9 @@ async def guess_category_smart(item_name: str) -> str | None:
         from app.services.llm import classify_department
         llm_result = await classify_department(item_name)
         if llm_result is not None:
+            # Ensure Hebrew: translate if English was returned
+            if not is_hebrew(llm_result):
+                llm_result = DEPT_EN_TO_HE.get(llm_result, llm_result)
             return llm_result
     except Exception:
         pass

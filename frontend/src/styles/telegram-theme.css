@@ -39,13 +39,26 @@ body {
   flex-direction: column;
   min-height: 100vh;
   max-width: 100vw;
-  padding-bottom: 80px; /* Space for input bar */
+  padding-bottom: 100px; /* Space for input bar + safe area */
 }
 
 /* ── Section Groups ──────────────────────────────────────────── */
 
 .section-group {
   margin-bottom: 8px;
+  animation: fadeSlideIn 0.25s ease-out;
+  transition: outline 0.2s ease, background-color 0.2s ease;
+}
+
+@keyframes fadeSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .section-header {
@@ -62,13 +75,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  cursor: grab;
-}
-
-.section-header .drag-handle {
-  opacity: 0.4;
-  font-size: 16px;
-  cursor: grab;
+  cursor: default;
 }
 
 /* ── Grocery Item ────────────────────────────────────────────── */
@@ -80,7 +87,11 @@ body {
   background-color: var(--app-section-bg);
   border-bottom: 0.5px solid var(--app-secondary-bg);
   gap: 12px;
-  transition: opacity 0.2s ease;
+  transition: opacity 0.25s ease, transform 0.2s ease, background-color 0.2s ease;
+}
+
+.grocery-item:active {
+  background-color: var(--app-secondary-bg);
 }
 
 .grocery-item.scratched {
@@ -104,6 +115,19 @@ body {
   background-color: var(--app-button);
   border-color: var(--app-button);
   color: var(--app-button-text);
+  animation: checkPop 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes checkPop {
+  0% {
+    transform: scale(0.8);
+  }
+  50% {
+    transform: scale(1.15);
+  }
+  100% {
+    transform: scale(1);
+  }
 }
 
 .grocery-item .item-content {
@@ -120,6 +144,7 @@ body {
 .grocery-item.scratched .item-name {
   text-decoration: line-through;
   color: var(--app-hint);
+  transition: color 0.2s ease;
 }
 
 .grocery-item .item-meta {
@@ -141,9 +166,19 @@ body {
   background: none;
   border: none;
   color: var(--app-hint);
-  font-size: 18px;
+  font-size: 16px;
   cursor: pointer;
-  padding: 4px;
+  padding: 6px;
+  border-radius: 50%;
+  transition: background-color 0.15s ease, transform 0.15s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.grocery-item .edit-btn:active {
+  background-color: var(--app-secondary-bg);
+  transform: scale(0.9);
 }
 
 /* ── Input Bar ───────────────────────────────────────────────── */
@@ -155,7 +190,7 @@ body {
   right: 0;
   background-color: var(--app-section-bg);
   border-top: 0.5px solid var(--app-secondary-bg);
-  padding: 8px 12px;
+  padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0px));
   z-index: 100;
   display: flex;
   gap: 8px;
@@ -164,13 +199,14 @@ body {
 
 .input-bar input {
   flex: 1;
-  padding: 10px 14px;
-  border-radius: 20px;
+  padding: 12px 16px;
+  border-radius: 22px;
   border: 1px solid var(--app-secondary-bg);
   background-color: var(--app-secondary-bg);
   color: var(--app-text);
   font-size: 16px;
   outline: none;
+  transition: border-color 0.2s ease;
 }
 
 .input-bar input::placeholder {
@@ -182,13 +218,13 @@ body {
 }
 
 .input-bar .send-btn {
-  width: 36px;
-  height: 36px;
+  width: 44px;
+  height: 44px;
   border-radius: 50%;
   background-color: var(--app-button);
   color: var(--app-button-text);
   border: none;
-  font-size: 20px;
+  font-size: 24px;
   font-weight: 300;
   cursor: pointer;
   display: flex;
@@ -197,15 +233,68 @@ body {
   flex-shrink: 0;
   line-height: 1;
   padding: 0;
-  /* Optical centering: the + glyph sits slightly high in most fonts */
   padding-top: 1px;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.input-bar .send-btn:active {
+  transform: scale(0.9);
+}
+
+/* ── Category Chip Bar ───────────────────────────────────────── */
+
+.category-chip-bar {
+  position: fixed;
+  bottom: calc(76px + env(safe-area-inset-bottom, 0px));
+  left: 12px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  z-index: 101;
+  padding: 6px 0;
+}
+
+.category-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  border-radius: 16px;
+  background-color: var(--app-button);
+  color: var(--app-button-text);
+  font-size: 13px;
+  font-weight: 500;
+  direction: rtl;
+  animation: chipSlideIn 0.2s ease-out;
+}
+
+@keyframes chipSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.category-chip-dismiss {
+  background: none;
+  border: none;
+  color: var(--app-hint);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 4px;
+  line-height: 1;
 }
 
 /* ── Suggestion Menu ─────────────────────────────────────────── */
 
 .suggestion-menu {
   position: fixed;
-  bottom: 60px;
+  bottom: calc(76px + env(safe-area-inset-bottom, 0px));
   left: 12px;
   right: 12px;
   background-color: var(--app-section-bg);
@@ -214,6 +303,18 @@ body {
   max-height: 240px;
   overflow-y: auto;
   z-index: 101;
+  animation: menuSlideUp 0.2s ease-out;
+}
+
+@keyframes menuSlideUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .suggestion-item {
@@ -223,6 +324,7 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  transition: background-color 0.15s ease;
 }
 
 .suggestion-item:last-child {
@@ -253,6 +355,16 @@ body {
   z-index: 200;
   display: flex;
   align-items: flex-end;
+  animation: overlayFadeIn 0.2s ease-out;
+}
+
+@keyframes overlayFadeIn {
+  from {
+    background-color: rgba(0, 0, 0, 0);
+  }
+  to {
+    background-color: rgba(0, 0, 0, 0.5);
+  }
 }
 
 .modal-drawer {
@@ -262,7 +374,7 @@ body {
   max-height: 80vh;
   overflow-y: auto;
   padding: 20px 16px;
-  animation: slideUp 0.3s ease;
+  animation: slideUp 0.3s cubic-bezier(0.32, 0.72, 0, 1);
 }
 
 @keyframes slideUp {
@@ -331,6 +443,12 @@ body {
   font-size: 16px;
   font-weight: 500;
   cursor: pointer;
+  transition: transform 0.12s ease, opacity 0.12s ease;
+}
+
+.modal-drawer .btn:active {
+  transform: scale(0.96);
+  opacity: 0.85;
 }
 
 .modal-drawer .btn-primary {
@@ -419,4 +537,55 @@ body {
   font-size: 13px;
   color: var(--app-subtitle);
   direction: rtl;
+}
+
+/* ── Drag & Drop ─────────────────────────────────────────────── */
+
+.item-drag-handle {
+  opacity: 0.35;
+  font-size: 18px;
+  cursor: grab;
+  padding: 4px;
+  user-select: none;
+  touch-action: none;
+}
+
+.item-drag-handle:active {
+  cursor: grabbing;
+}
+
+.section-drop-target {
+  outline: 2px dashed var(--app-button);
+  outline-offset: -2px;
+  border-radius: 4px;
+  background-color: color-mix(in srgb, var(--app-button) 8%, transparent);
+}
+
+.section-empty-drop {
+  padding: 16px;
+  text-align: center;
+  color: var(--app-hint);
+  font-size: 13px;
+  font-style: italic;
+  animation: fadeSlideIn 0.2s ease-out;
+}
+
+.drag-overlay-item {
+  background-color: var(--app-section-bg);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+  border-radius: 8px;
+  opacity: 0.9;
+  padding: 12px 16px;
+  animation: dragLift 0.15s ease-out;
+}
+
+@keyframes dragLift {
+  from {
+    transform: scale(1);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  }
+  to {
+    transform: scale(1.03);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+  }
 }

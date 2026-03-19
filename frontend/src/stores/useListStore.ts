@@ -34,6 +34,10 @@ interface ListState {
   ) => Promise<void>;
   deleteItem: (itemId: number) => Promise<void>;
   reorderItems: (itemIds: number[]) => Promise<void>;
+  moveItemToCategory: (
+    itemId: number,
+    newCategory: string | null
+  ) => Promise<void>;
 
   /* ── WebSocket-driven updates ───────────────────────────────── */
   wsAddItem: (item: GroceryItem) => void;
@@ -138,6 +142,25 @@ export const useListStore = create<ListState>((set, get) => ({
       .filter(Boolean) as GroceryItem[];
     set({ items: reordered });
     await api.sortItems(itemIds);
+  },
+
+  moveItemToCategory: async (
+    itemId: number,
+    newCategory: string | null
+  ) => {
+    // Optimistic update
+    set((s) => ({
+      items: s.items.map((i) =>
+        i.id === itemId ? { ...i, category: newCategory } : i
+      ),
+    }));
+    try {
+      await api.updateItem(itemId, { category: newCategory });
+    } catch {
+      // Revert on failure — refetch
+      const listId = get().activeListId;
+      if (listId) get().fetchItems(listId);
+    }
   },
 
   /* ── WebSocket-driven updates ───────────────────────────────── */

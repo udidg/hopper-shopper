@@ -10,6 +10,7 @@ from app.models.user import User
 from app.schemas.grocery_item import SuggestionResponse
 from app.services.suggestion import search_suggestions
 from app.services.department import search_departments
+from app.services.grouping import guess_category_smart
 
 router = APIRouter(prefix="/api/suggestions", tags=["suggestions"])
 
@@ -22,6 +23,12 @@ class DepartmentResponse(BaseModel):
 
     name: str | None
     name_he: str | None
+
+
+class CategorySuggestionResponse(BaseModel):
+    """A suggested category for an item name."""
+
+    category: str | None
 
 
 # ── Endpoints ────────────────────────────────────────────────────
@@ -42,6 +49,21 @@ async def get_suggestions(
     """
     results = await search_suggestions(db=db, query=q, user_id=user.id)
     return [SuggestionResponse(**r) for r in results]
+
+
+@router.get("/category", response_model=CategorySuggestionResponse)
+async def get_category_suggestion(
+    item_name: str = Query(..., min_length=1, description="Item name to classify"),
+    user: User = Depends(get_current_user),
+):
+    """
+    Suggest a store category for a given item name.
+
+    Uses keyword matching with LLM fallback.
+    Always returns the Hebrew category name.
+    """
+    category = await guess_category_smart(item_name)
+    return CategorySuggestionResponse(category=category)
 
 
 @router.get("/departments", response_model=list[DepartmentResponse])
