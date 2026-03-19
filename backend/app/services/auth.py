@@ -23,6 +23,7 @@ def validate_telegram_init_data(init_data: str) -> dict | None:
 
     logger = logging.getLogger(__name__)
 
+    # Parse the raw query string into key=value pairs (URL-decoded)
     parsed = dict(urllib.parse.parse_qsl(init_data, keep_blank_values=True))
 
     received_hash = parsed.pop("hash", None)
@@ -31,15 +32,12 @@ def validate_telegram_init_data(init_data: str) -> dict | None:
         return None
 
     # Remove 'signature' field – it's not part of the hash computation
-    # (added by Telegram in newer API versions)
     parsed.pop("signature", None)
 
-    # Build the data-check-string (sorted key=value pairs)
+    # Build the data-check-string (sorted key=value pairs, URL-decoded)
     data_check_string = "\n".join(
         f"{k}={v}" for k, v in sorted(parsed.items())
     )
-
-    logger.info("Data-check-string keys: %s", sorted(parsed.keys()))
 
     # Compute HMAC-SHA256
     secret_key = hmac.new(
@@ -49,28 +47,47 @@ def validate_telegram_init_data(init_data: str) -> dict | None:
         secret_key, data_check_string.encode(), hashlib.sha256
     ).hexdigest()
 
-    if not hmac.compare_digest(computed_hash, received_hash):
-        token = settings.telegram_bot_token
-        logger.warning(
-            "Hash mismatch: computed=%s received=%s | token_len=%d token_start=%s | keys=%s | data_check_string_repr=%s",
-            computed_hash[:16] + "...",
-            received_hash[:16] + "...",
-            len(token),
-            token[:15] + "...",
-            sorted(parsed.keys()),
-            repr(data_check_string[:200]),
-        )
-        # Try alternative: maybe the initData was already URL-decoded by the frontend
-        # and needs to be re-parsed differently. Let's also try without URL decoding the values.
+    if hmac.compare_digest(computed_hash, received_hash):
+        logger.info("Telegram initData validated successfully (decoded method)")
+        user_data = parsed.get("user")
+        if user_data:
+            return json.loads(user_data)
         return None
 
-    logger.info("Telegram initData validated successfully")
+    # Method 2: Try with raw (non-URL-decoded) values from the query string
+    # Some Telegram SDK versions send data where the hash is computed over raw values
+    raw_pairs = {}
+    for part in init_data.split("&"):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            raw_pairs[k] = v
 
-    # Parse the user JSON from initData
-    user_data = parsed.get("user")
-    if user_data:
-        return json.loads(user_data)
+    raw_hash = raw_pairs.pop("hash", None)
+    raw_pairs.pop("signature", None)
 
+    raw_data_check_string = "\n".join(
+        f"{k}={v}" for k, v in sorted(raw_pairs.items())
+    )
+
+    raw_computed_hash = hmac.new(
+        secret_key, raw_data_check_string.encode(), hashlib.sha256
+    ).hexdigest()
+
+    if raw_hash and hmac.compare_digest(raw_computed_hash, raw_hash):
+        logger.info("Telegram initData validated successfully (raw method)")
+        user_data = parsed.get("user")  # Use decoded values for JSON parsing
+        if user_data:
+            return json.loads(user_data)
+        return None
+
+    token = settings.telegram_bot_token
+    logger.warning(
+        "Hash mismatch (both methods failed): decoded_computed=%s raw_computed=%s received=%s | token_len=%d",
+        computed_hash[:16] + "...",
+        raw_computed_hash[:16] + "...",
+        received_hash[:16] + "...",
+        len(token),
+    )
     return None
 
 
