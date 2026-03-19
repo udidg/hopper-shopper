@@ -52,13 +52,16 @@ def validate_telegram_init_data(init_data: str) -> dict | None:
     if not hmac.compare_digest(computed_hash, received_hash):
         token = settings.telegram_bot_token
         logger.warning(
-            "Hash mismatch: computed=%s received=%s | token_len=%d token_start=%s | keys=%s",
+            "Hash mismatch: computed=%s received=%s | token_len=%d token_start=%s | keys=%s | data_check_string_repr=%s",
             computed_hash[:16] + "...",
             received_hash[:16] + "...",
             len(token),
             token[:15] + "...",
             sorted(parsed.keys()),
+            repr(data_check_string[:200]),
         )
+        # Try alternative: maybe the initData was already URL-decoded by the frontend
+        # and needs to be re-parsed differently. Let's also try without URL decoding the values.
         return None
 
     logger.info("Telegram initData validated successfully")
