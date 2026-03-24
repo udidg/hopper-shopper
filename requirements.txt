@@ -1,0 +1,16 @@
+# Telegram Bot
+python-telegram-bot[ext]==21.*
+
+# Database
+sqlalchemy[asyncio]==2.*
+asyncpg==0.30.*
+alembic==1.*
+
+# HTTP client (for Ollama LLM)
+httpx==0.28.*
+
+# Settings
+pydantic-settings==2.*
+
+# Optional: Ed25519 crypto (not needed for bot-only, kept for compatibility)
+# cryptography==44.*

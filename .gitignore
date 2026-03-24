@@ -11,16 +11,8 @@ build/
 .venv/
 venv/
 
-# Node
-node_modules/
-frontend/dist/
-
 # Docker
 pgdata/
-
-# SSL certs
-nginx/certs/*.pem
-nginx/certs/*.key
 
 # IDE
 .vscode/

@@ -1,87 +1,39 @@
 services:
-  # ── Reverse Proxy ──────────────────────────────────────────────
-  nginx:
-    image: nginx:1.25-alpine
-    ports:
-      - "8080:80"
-      # Uncomment for production with SSL:
-      # - "443:443"
-    volumes:
-      # Use nginx.dev.conf for local dev (no SSL)
-      # Switch to nginx.conf for production with SSL certs
-      - ./nginx/nginx.dev.conf:/etc/nginx/nginx.conf:ro
-      # Uncomment for production:
-      # - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      # - ./nginx/certs:/etc/nginx/certs:ro
-    depends_on:
-      - backend
-      - frontend
-    restart: unless-stopped
-    networks:
-      - hopper-net
-
-  # ── Backend ────────────────────────────────────────────────────
-  backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    env_file:
-      - .env
-    expose:
-      - "8000"
+  bot:
+    build: .
+    env_file: .env
     depends_on:
       db:
         condition: service_healthy
     restart: unless-stopped
-    networks:
-      - hopper-net
 
-  # ── Frontend ───────────────────────────────────────────────────
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    expose:
-      - "80"
-    restart: unless-stopped
-    networks:
-      - hopper-net
-
-  # ── Database ───────────────────────────────────────────────────
   db:
     image: postgres:16-alpine
-    env_file:
-      - .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-hopper}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-hopper_shopper}
     volumes:
       - pgdata:/var/lib/postgresql/data
-    expose:
-      - "5432"
+    ports:
+      - "${DB_PORT:-5432}:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      test: pg_isready -U ${POSTGRES_USER:-hopper}
       interval: 5s
-      timeout: 5s
       retries: 5
     restart: unless-stopped
-    networks:
-      - hopper-net
 
-  # ── Ollama LLM (optional – for department classification) ──────
+  # Optional: Ollama for smart department classification
+  # Activate with: docker compose --profile llm up
   ollama:
-    image: ollama/ollama:latest
+    image: ollama/ollama
     volumes:
       - ollama_data:/root/.ollama
-    expose:
-      - "11434"
+    ports:
+      - "11434:11434"
+    profiles: [llm]
     restart: unless-stopped
-    networks:
-      - hopper-net
 
 volumes:
   pgdata:
-    driver: local
   ollama_data:
-    driver: local
-
-networks:
-  hopper-net:
-    driver: bridge
