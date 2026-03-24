@@ -37,11 +37,6 @@ SSH into your NAS and navigate to the project directory:
 cd /path/to/hopper-shopper
 ```
 
-### Pull the latest code:
-```bash
-git pull
-```
-
 ### Stop the old services:
 ```bash
 docker compose down
@@ -78,9 +73,16 @@ You can remove these old variables (no longer needed):
 - `SSL_KEY_PATH`
 - `DOMAIN`
 
+### Copy the new docker-compose.yml:
+```bash
+# Get the latest docker-compose.yml from the repo
+curl -o docker-compose.yml https://raw.githubusercontent.com/udidg/hopper-shopper/main/docker-compose.yml
+```
+
 ### Start the new bot:
 ```bash
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 ```
 
 ### Verify it's running:
@@ -135,9 +137,11 @@ docker compose exec ollama ollama pull gemma3:1b
 |------|---------|
 | View logs | `docker compose logs -f bot` |
 | Restart bot | `docker compose restart bot` |
-| Update & redeploy | `git pull && docker compose up -d --build` |
+| Update to latest | `docker compose pull && docker compose up -d` |
 | DB backup | `docker compose exec db pg_dump -U hopper hopper_shopper > backup.sql` |
 | DB restore | `cat backup.sql \| docker compose exec -T db psql -U hopper hopper_shopper` |
+
+> **Note:** The bot image is automatically built and pushed to Docker Hub by GitHub Actions on every push to `main`. Just `docker compose pull` on your NAS to get the latest version.
 
 ---
 

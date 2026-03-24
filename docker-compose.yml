@@ -1,6 +1,6 @@
 services:
   bot:
-    build: .
+    image: udidg/hopper-shopper-bot:latest
     env_file: .env
     depends_on:
       db:
