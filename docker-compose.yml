@@ -1,7 +1,12 @@
-# Pre-create the external network once on your NAS:
-#   docker network create hopper-net
-# This avoids Docker recreating the bridge on every up/down cycle,
-# which can briefly disrupt host networking on some NAS devices.
+# Network is managed by Compose with a pinned subnet in the safe 172.x range.
+# This prevents Docker from auto-assigning a 192.168.x.x subnet that could
+# overlap with your LAN and cause routing issues / internet drops.
+#
+# MIGRATION: If you previously used an external "hopper-net", clean up:
+#   docker compose down
+#   docker network rm hopper-net          # remove the old external network
+#   docker network rm hopper-shopper_hopper-net  # remove any stale auto-created one
+#   docker compose up -d                  # Compose creates the new pinned network
 
 services:
   bot:
@@ -60,4 +65,10 @@ volumes:
 
 networks:
   hopper-net:
-    external: true
+    driver: bridge
+    ipam:
+      config:
+        # Pinned to 172.28.0.0/24 — safely in Docker's private range,
+        # well away from typical LAN subnets (192.168.x.x, 10.x.x.x).
+        # /24 = 254 usable addresses, more than enough for this stack.
+        - subnet: 172.28.0.0/24
