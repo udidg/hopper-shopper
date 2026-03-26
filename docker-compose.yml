@@ -16,7 +16,6 @@ services:
       resources:
         limits:
           memory: 512M
-          cpus: "1.0"
 
   db:
     image: postgres:16-alpine
@@ -35,7 +34,6 @@ services:
       resources:
         limits:
           memory: 256M
-          cpus: "0.5"
 
   # Local LLM fallback — only starts with: docker compose --profile ollama up -d
   ollama:
@@ -48,7 +46,6 @@ services:
       resources:
         limits:
           memory: 2G
-          cpus: "2.0"
 
 volumes:
   pgdata:
