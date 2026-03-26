@@ -12,7 +12,14 @@ class Settings(BaseSettings):
     # Database
     database_url: str
 
-    # Ollama LLM (optional – for smart department classification & NLU)
+    # Gemini API (primary LLM — cloud, stronger model)
+    gemini_api_key: str = ""  # Google AI Studio API key
+    gemini_model: str = "gemini-2.0-flash"
+
+    # Global LLM rate limit (requests per minute, across all backends)
+    llm_rate_limit: int = 20
+
+    # Ollama LLM (fallback — local, runs on the same machine)
     ollama_url: str = ""  # e.g. "http://ollama:11434"
     ollama_model: str = "gemma3:1b"
 

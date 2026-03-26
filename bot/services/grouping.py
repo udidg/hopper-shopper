@@ -252,18 +252,18 @@ async def guess_category_smart(item_name: str) -> str | None:
 
     Pipeline:
     1. Try keyword-based matching (fast, no network)
-    2. If no match, try LLM classification via Ollama (slower, smarter)
+    2. If no match, try LLM classification (Gemini → Ollama)
     3. Return None if both fail
     """
     result = guess_category(item_name)
     if result is not None:
         return result
 
-    # Only try LLM if Ollama is configured and reachable
+    # Try LLM (Gemini first, then Ollama fallback — handled inside llm module)
     try:
-        from bot.services.llm import classify_department, is_ollama_available
+        from bot.services.llm import classify_department, is_llm_available
 
-        if await is_ollama_available():
+        if await is_llm_available():
             llm_result = await classify_department(item_name)
             if llm_result is not None:
                 if not is_hebrew(llm_result):
@@ -297,10 +297,10 @@ async def guess_categories_batch(item_names: list[str]) -> dict[str, str | None]
         try:
             from bot.services.llm import (
                 classify_departments_batch,
-                is_ollama_available,
+                is_llm_available,
             )
 
-            if await is_ollama_available():
+            if await is_llm_available():
                 llm_results = await classify_departments_batch(needs_llm)
                 for name, dept in llm_results.items():
                     if dept and not is_hebrew(dept):

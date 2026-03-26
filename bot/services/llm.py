@@ -1,4 +1,4 @@
-"""LLM service – uses Ollama for intelligent grocery list features.
+"""LLM service – Gemini (primary) + Ollama (fallback) for grocery list features.
 
 Provides:
 - Department classification (single + batch)
@@ -6,12 +6,20 @@ Provides:
 - Natural language intent understanding
 - JSON extraction utilities
 - In-memory result caching
+- Global rate limiting (configurable, default 20 req/min)
+
+Backend priority:
+1. Gemini API (cloud, stronger model) — if GEMINI_API_KEY is set
+2. Ollama (local, lighter model) — if OLLAMA_URL is set and reachable
+3. None — graceful degradation to keyword-only matching
 """
 
+import asyncio
 import json
 import logging
 import re
 import time
+from collections import deque
 from typing import Optional
 
 import httpx
@@ -26,8 +34,44 @@ from bot.services.grouping import (
 
 logger = logging.getLogger(__name__)
 
+# ── Timeouts ─────────────────────────────────────────────────────
+
 _OLLAMA_TIMEOUT = 15.0
 _OLLAMA_BATCH_TIMEOUT = 30.0
+_GEMINI_TIMEOUT = 15.0
+_GEMINI_BATCH_TIMEOUT = 30.0
+
+# ── Global rate limiter (sliding window) ─────────────────────────
+
+_rate_limit_lock = asyncio.Lock()
+_request_timestamps: deque[float] = deque()
+
+
+async def _acquire_rate_limit() -> bool:
+    """Check and acquire a slot in the global rate limiter.
+
+    Returns True if the request is allowed, False if rate limit exceeded.
+    Uses a sliding window of 60 seconds.
+    """
+    async with _rate_limit_lock:
+        now = time.monotonic()
+        window = 60.0  # 1 minute
+
+        # Purge timestamps older than the window
+        while _request_timestamps and _request_timestamps[0] < now - window:
+            _request_timestamps.popleft()
+
+        if len(_request_timestamps) >= settings.llm_rate_limit:
+            logger.warning(
+                "LLM rate limit reached (%d/%d req/min)",
+                len(_request_timestamps),
+                settings.llm_rate_limit,
+            )
+            return False
+
+        _request_timestamps.append(now)
+        return True
+
 
 # ── Ollama availability cache ────────────────────────────────────
 
@@ -77,7 +121,77 @@ def extract_json(text: str) -> dict | list | None:
     return None
 
 
-# ── Low-level Ollama call ────────────────────────────────────────
+# ── Backend: Gemini API ──────────────────────────────────────────
+
+
+async def _gemini_generate(
+    prompt: str,
+    system: str,
+    *,
+    timeout: float = _GEMINI_TIMEOUT,
+    temperature: float = 0.1,
+    max_tokens: int = 256,
+    json_mode: bool = False,
+) -> str | None:
+    """Send a request to the Gemini REST API and return the response text."""
+    if not settings.gemini_api_key:
+        return None
+
+    if not await _acquire_rate_limit():
+        return None
+
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{settings.gemini_model}:generateContent"
+        f"?key={settings.gemini_api_key}"
+    )
+
+    # Build the request body
+    contents = [
+        {"role": "user", "parts": [{"text": prompt}]},
+    ]
+
+    generation_config: dict = {
+        "temperature": temperature,
+        "maxOutputTokens": max_tokens,
+    }
+    if json_mode:
+        generation_config["responseMimeType"] = "application/json"
+
+    payload = {
+        "contents": contents,
+        "systemInstruction": {"parts": [{"text": system}]},
+        "generationConfig": generation_config,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(url, json=payload)
+            response.raise_for_status()
+            data = response.json()
+
+            # Extract text from Gemini response
+            candidates = data.get("candidates", [])
+            if candidates:
+                parts = candidates[0].get("content", {}).get("parts", [])
+                if parts:
+                    return parts[0].get("text", "").strip()
+
+            logger.warning("Gemini returned empty response: %s", data)
+            return None
+
+    except httpx.TimeoutException:
+        logger.warning("Gemini request timed out (%.1fs)", timeout)
+        return None
+    except httpx.HTTPStatusError as e:
+        logger.warning("Gemini HTTP %d: %s", e.response.status_code, e.response.text[:200])
+        return None
+    except Exception as e:
+        logger.warning("Gemini unexpected error: %s", e)
+        return None
+
+
+# ── Backend: Ollama (local) ──────────────────────────────────────
 
 
 async def _ollama_generate(
@@ -91,6 +205,9 @@ async def _ollama_generate(
 ) -> str | None:
     """Send a generate request to Ollama and return the response text."""
     if not settings.ollama_url:
+        return None
+
+    if not await _acquire_rate_limit():
         return None
 
     payload: dict = {
@@ -125,6 +242,55 @@ async def _ollama_generate(
     except Exception as e:
         logger.warning("Ollama unexpected error: %s", e)
         return None
+
+
+# ── Unified LLM call (Gemini → Ollama fallback) ─────────────────
+
+
+async def _llm_generate(
+    prompt: str,
+    system: str,
+    *,
+    temperature: float = 0.1,
+    max_tokens: int = 256,
+    json_mode: bool = False,
+    timeout: float | None = None,
+    batch: bool = False,
+) -> str | None:
+    """Try Gemini first, fall back to Ollama if Gemini is unavailable.
+
+    This is the single entry point for all LLM calls in the service.
+    """
+    # ── Try Gemini first ──
+    if settings.gemini_api_key:
+        gemini_timeout = timeout or (_GEMINI_BATCH_TIMEOUT if batch else _GEMINI_TIMEOUT)
+        result = await _gemini_generate(
+            prompt=prompt,
+            system=system,
+            timeout=gemini_timeout,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            json_mode=json_mode,
+        )
+        if result is not None:
+            return result
+        logger.debug("Gemini failed or rate-limited, trying Ollama fallback")
+
+    # ── Fallback to Ollama ──
+    if settings.ollama_url and await is_ollama_available():
+        ollama_timeout = timeout or (_OLLAMA_BATCH_TIMEOUT if batch else _OLLAMA_TIMEOUT)
+        result = await _ollama_generate(
+            prompt=prompt,
+            system=system,
+            timeout=ollama_timeout,
+            temperature=temperature,
+            num_predict=max_tokens,
+            json_mode=json_mode,
+        )
+        if result is not None:
+            return result
+
+    return None
 
 
 # ── Department classification ────────────────────────────────────
@@ -176,7 +342,7 @@ def _validate_department(result: str) -> str | None:
 
 async def classify_department(item_name: str) -> Optional[str]:
     """
-    Use Ollama to classify a grocery item into a store department.
+    Use LLM to classify a grocery item into a store department.
 
     Checks in-memory cache first. Always returns the Hebrew department name,
     or None if the LLM is unavailable or fails.
@@ -191,11 +357,11 @@ async def classify_department(item_name: str) -> Optional[str]:
 
     user_prompt = f'פריט: "{item_name}" → מחלקה:'
 
-    result = await _ollama_generate(
+    result = await _llm_generate(
         prompt=user_prompt,
         system=_CLASSIFY_SYSTEM,
         temperature=0.1,
-        num_predict=30,
+        max_tokens=30,
     )
 
     if result is None:
@@ -271,13 +437,13 @@ async def classify_departments_batch(
 
     batch_prompt = f"סווג את הפריטים הבאים:\n{items_list}"
 
-    raw = await _ollama_generate(
+    raw = await _llm_generate(
         prompt=batch_prompt,
         system=batch_system,
-        timeout=_OLLAMA_BATCH_TIMEOUT,
         temperature=0.1,
-        num_predict=200,
+        max_tokens=500,
         json_mode=True,
+        batch=True,
     )
 
     if raw:
@@ -348,12 +514,11 @@ async def parse_items_smart(text: str) -> list[dict] | None:
     if not text or not text.strip():
         return None
 
-    raw = await _ollama_generate(
+    raw = await _llm_generate(
         prompt=f"קלט: \"{text}\"\nפלט:",
         system=_PARSE_SYSTEM,
-        timeout=_OLLAMA_TIMEOUT,
         temperature=0.1,
-        num_predict=500,
+        max_tokens=500,
         json_mode=True,
     )
 
@@ -412,6 +577,11 @@ _INTENT_SYSTEM = """אתה עוזר לנהל רשימת קניות. נתח את 
 "מה אפשר לעשות?" → {"action": "help", "items": []}
 "מה שלומך?" → {"action": "unknown", "items": []}
 
+חשוב מאוד:
+- אם המשתמש מזכיר פריטים בכל צורה שהיא (גם בלי פועל ברור), זו כנראה הוספה (add).
+- "חלב ולחם" → add. "ביצים, גבינה" → add.
+- אם יש ספק, העדף add על unknown.
+
 ענה אך ורק ב-JSON תקין, ללא הסבר נוסף.
 """
 
@@ -429,12 +599,11 @@ async def understand_intent(text: str) -> dict | None:
     if not text or not text.strip():
         return None
 
-    raw = await _ollama_generate(
+    raw = await _llm_generate(
         prompt=f'"{text}"',
         system=_INTENT_SYSTEM,
-        timeout=_OLLAMA_TIMEOUT,
         temperature=0.1,
-        num_predict=200,
+        max_tokens=200,
         json_mode=True,
     )
 
@@ -464,7 +633,12 @@ async def understand_intent(text: str) -> dict | None:
     return {"action": action, "items": items}
 
 
-# ── Ollama availability check ────────────────────────────────────
+# ── Availability checks ──────────────────────────────────────────
+
+
+def is_gemini_configured() -> bool:
+    """Return True if a Gemini API key is configured."""
+    return bool(settings.gemini_api_key)
 
 
 async def is_ollama_available() -> bool:
@@ -494,8 +668,15 @@ async def is_ollama_available() -> bool:
         logger.info("Ollama is available at %s", settings.ollama_url)
     else:
         logger.info(
-            "Ollama is not available at %s — using keyword matching only",
+            "Ollama is not available at %s",
             settings.ollama_url,
         )
 
     return bool(_ollama_available)
+
+
+async def is_llm_available() -> bool:
+    """Return True if any LLM backend (Gemini or Ollama) is available."""
+    if is_gemini_configured():
+        return True
+    return await is_ollama_available()

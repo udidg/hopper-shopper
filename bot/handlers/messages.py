@@ -26,9 +26,9 @@ logger = logging.getLogger(__name__)
 async def _try_intent_understanding(text: str) -> dict | None:
     """Try to understand user intent via LLM. Returns None if unavailable."""
     try:
-        from bot.services.llm import is_ollama_available, understand_intent
+        from bot.services.llm import is_llm_available, understand_intent
 
-        if await is_ollama_available():
+        if await is_llm_available():
             return await understand_intent(text)
     except Exception:
         logger.debug("Intent understanding failed", exc_info=True)
@@ -38,9 +38,9 @@ async def _try_intent_understanding(text: str) -> dict | None:
 async def _try_smart_parse(text: str) -> list[dict] | None:
     """Try to parse items via LLM. Returns None if unavailable."""
     try:
-        from bot.services.llm import is_ollama_available, parse_items_smart
+        from bot.services.llm import is_llm_available, parse_items_smart
 
-        if await is_ollama_available():
+        if await is_llm_available():
             return await parse_items_smart(text)
     except Exception:
         logger.debug("Smart parsing failed", exc_info=True)
