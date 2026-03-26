@@ -25,6 +25,7 @@ from bot.services.list_manager import (
     items_to_dicts,
     mark_item_done,
     remove_items,
+    set_item_detail,
     set_item_price,
 )
 from bot.services.parser import parse_items_text
@@ -115,13 +116,16 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                     item_names=item_names,
                     user_id=user.id,
                 )
-                added_names = [item.name for item in added]
+                added_info = [
+                    {"name": item.name, "detail": item.description}
+                    for item in added
+                ]
     except Exception:
         logger.exception("Database error in /add")
         await update.message.reply_text(DB_ERROR_MSG)
         return
 
-    await update.message.reply_text(format_items_added(added_names))
+    await update.message.reply_text(format_items_added(added_info))
 
 
 # ── /remove ──────────────────────────────────────────────────────
@@ -317,3 +321,105 @@ async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text(f"💰 מחיר {result_name} עודכן ל-₪{price:.2f}")
     else:
         await update.message.reply_text(f"❌ הפריט '{item_name}' לא נמצא ברשימה.")
+
+
+# ── /detail ──────────────────────────────────────────────────────
+
+
+async def detail_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /detail — save a default detail/brand for an item.
+
+    Usage: /detail תפוחי אדמה של דוד משה
+    This saves "של דוד משה" as the default detail for "תפוחי אדמה".
+    Next time you add "תפוחי אדמה", the detail will be auto-applied.
+    """
+    args = _extract_args(update.message.text)
+
+    if not args.strip():
+        await update.message.reply_text(
+            "❌ שימוש: /detail פריט פרטים\n"
+            "דוגמה: /detail תפוחי אדמה של דוד משה\n\n"
+            "הפרטים יישמרו ויוצגו אוטומטית בכל פעם שתוסיפו את הפריט.",
+        )
+        return
+
+    # Split: first word(s) = item name, rest = detail
+    # We need a smarter split — try to match against known items in history
+    # For now, use a simple approach: everything before the last known separator
+    parts = args.strip()
+
+    # Try to find the item name by checking history
+    try:
+        async with async_session() as session:
+            async with session.begin():
+                chat_id = update.effective_chat.id
+
+                # Strategy: try progressively shorter prefixes as item name
+                words = parts.split()
+                item_name = None
+                detail = None
+
+                for i in range(len(words) - 1, 0, -1):
+                    candidate_name = " ".join(words[:i])
+                    candidate_detail = " ".join(words[i:])
+
+                    # Check if this candidate exists in history or in the active list
+                    from bot.services.list_manager import get_or_create_active_list
+                    from bot.models.grocery_item import GroceryItem
+                    from bot.models.item_history import ItemHistory
+                    from sqlalchemy import select, and_
+
+                    active_list = await get_or_create_active_list(session, chat_id)
+
+                    # Check active list
+                    result = await session.execute(
+                        select(GroceryItem).where(
+                            and_(
+                                GroceryItem.list_id == active_list.id,
+                                GroceryItem.name.ilike(candidate_name),
+                            )
+                        )
+                    )
+                    if result.scalar_one_or_none():
+                        item_name = candidate_name
+                        detail = candidate_detail
+                        break
+
+                    # Check history
+                    result = await session.execute(
+                        select(ItemHistory).where(
+                            and_(
+                                ItemHistory.chat_id == chat_id,
+                                ItemHistory.name.ilike(candidate_name),
+                            )
+                        )
+                    )
+                    if result.scalar_one_or_none():
+                        item_name = candidate_name
+                        detail = candidate_detail
+                        break
+
+                # Fallback: first word = item, rest = detail
+                if item_name is None:
+                    item_name = words[0]
+                    detail = " ".join(words[1:]) if len(words) > 1 else None
+
+                if not detail:
+                    await update.message.reply_text(
+                        "❌ נא לציין גם פריט וגם פרטים.\n"
+                        "דוגמה: /detail תפוחי אדמה של דוד משה",
+                    )
+                    return
+
+                await set_item_detail(session, chat_id, item_name, detail)
+    except Exception:
+        logger.exception("Database error in /detail")
+        await update.message.reply_text(DB_ERROR_MSG)
+        return
+
+    await update.message.reply_text(
+        f"📝 פרטים נשמרו!\n"
+        f"פריט: {item_name}\n"
+        f"פרטים: {detail}\n\n"
+        f"מעכשיו כשתוסיפו '{item_name}' הפרטים יופיעו אוטומטית.",
+    )

@@ -151,16 +151,41 @@ def format_plain_list(items: list[dict], list_name: str = "רשימת קניות
     return "\n".join(lines)
 
 
-def format_items_added(item_names: list[str]) -> str:
-    """Format a confirmation message for added items."""
-    if not item_names:
+def format_items_added(items) -> str:
+    """Format a confirmation message for added items.
+
+    Accepts either:
+    - list of strings (item names)
+    - list of dicts with 'name' and optional 'detail' keys
+    """
+    if not items:
         return "לא נוספו פריטים."
 
-    if len(item_names) == 1:
-        return f"✅ {item_names[0]} נוסף לרשימה!"
+    # Normalize to list of dicts
+    normalized: list[dict] = []
+    for item in items:
+        if isinstance(item, str):
+            normalized.append({"name": item})
+        else:
+            normalized.append(item)
 
-    items_text = "\n".join(f"  • {name}" for name in item_names)
-    return f"✅ {len(item_names)} פריטים נוספו לרשימה:\n{items_text}"
+    if len(normalized) == 1:
+        entry = normalized[0]
+        detail = entry.get("detail")
+        if detail:
+            return f"✅ {entry['name']} נוסף לרשימה! ({detail})"
+        return f"✅ {entry['name']} נוסף לרשימה!"
+
+    lines = []
+    for entry in normalized:
+        detail = entry.get("detail")
+        if detail:
+            lines.append(f"  • {entry['name']} ({detail})")
+        else:
+            lines.append(f"  • {entry['name']}")
+
+    items_text = "\n".join(lines)
+    return f"✅ {len(normalized)} פריטים נוספו לרשימה:\n{items_text}"
 
 
 def format_items_removed(item_names: list[str]) -> str:
@@ -193,10 +218,13 @@ def format_help() -> str:
 🛍️ קניות:
   /shop — מצב קניות עם כפתורים אינטראקטיביים
 
-💰 מחירים:
+💰 מחירים ופרטים:
   /price פריט מחיר — עדכון מחיר פריט
+  /detail פריט פרטים — שמירת מותג/פרטים לפריט
 
 📊 מידע:
   /help — הצגת עזרה זו
 
-💡 טיפ: אפשר גם לשלוח רשימה כטקסט חופשי (פריט בכל שורה) והבוט יזהה אותה אוטומטית!"""
+💡 טיפים:
+  • שלחו רשימה כטקסט חופשי (פריט בכל שורה) והבוט יזהה אותה אוטומטית
+  • השתמשו ב-/detail כדי לשמור מותג מועדף — למשל: /detail תפוחי אדמה של דוד משה"""

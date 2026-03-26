@@ -69,13 +69,16 @@ async def handle_text_message(
                     item_names=item_names,
                     user_id=user.id,
                 )
-                added_names = [item.name for item in added]
+                added_info = [
+                    {"name": item.name, "detail": item.description}
+                    for item in added
+                ]
     except Exception:
         logger.exception("Database error in message handler")
         return  # Silently fail for auto-detection — don't spam the chat
 
     await update.message.reply_text(
         f"🔍 זיהיתי רשימת קניות!\n\n"
-        + format_items_added(added_names)
+        + format_items_added(added_info)
         + "\n\nשלחו /sort למיון לפי מחלקות 🏪",
     )

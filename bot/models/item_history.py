@@ -17,6 +17,9 @@ class ItemHistory(Base):
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     default_category: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    default_detail: Mapped[str | None] = mapped_column(
+        String(500), nullable=True
+    )  # Saved brand/detail, e.g. "של דוד משה"
     last_price: Mapped[float | None] = mapped_column(Numeric(10, 2), nullable=True)
     times_added: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     last_used: Mapped[datetime] = mapped_column(
@@ -24,4 +27,4 @@ class ItemHistory(Base):
     )
 
     def __repr__(self) -> str:
-        return f"<ItemHistory(id={self.id}, name={self.name}, times={self.times_added})>"
+        return f"<ItemHistory(id={self.id}, name={self.name}, detail={self.default_detail})>"

@@ -17,6 +17,7 @@ from bot.handlers.callbacks import handle_shop_callback, shop_command
 from bot.handlers.commands import (
     add_command,
     clear_command,
+    detail_command,
     done_command,
     help_command,
     list_command,
@@ -46,6 +47,7 @@ BOT_COMMANDS = [
     BotCommand("undone", "ביטול סימון"),
     BotCommand("clear", "ניקוי הרשימה"),
     BotCommand("shop", "מצב קניות אינטראקטיבי"),
+    BotCommand("detail", "שמירת פרטים/מותג לפריט"),
     BotCommand("price", "עדכון מחיר פריט"),
     BotCommand("help", "עזרה"),
 ]
@@ -80,6 +82,7 @@ def main() -> None:
     app.add_handler(CommandHandler("list", list_command))
     app.add_handler(CommandHandler("sort", sort_command))
     app.add_handler(CommandHandler("price", price_command))
+    app.add_handler(CommandHandler("detail", detail_command))
     app.add_handler(CommandHandler("shop", shop_command))
 
     # ── Callback query handler (shopping mode buttons) ───────────

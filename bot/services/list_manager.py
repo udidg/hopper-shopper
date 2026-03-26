@@ -125,6 +125,7 @@ async def add_items(
     Add multiple items to a grocery list.
 
     Automatically classifies each item into a department.
+    Auto-applies saved details/brand from item history.
     Updates item history for future suggestions.
     """
     added: list[GroceryItem] = []
@@ -141,10 +142,14 @@ async def add_items(
         # Classify the item
         category = await guess_category_smart(name)
 
+        # Look up saved detail/brand from history
+        saved_detail = await _get_saved_detail(session, chat_id, name)
+
         item = GroceryItem(
             list_id=list_id,
             name=name,
             category=category,
+            description=saved_detail,
             added_by=user_id,
             sort_order=max_order + i + 1,
         )
@@ -279,7 +284,77 @@ async def set_item_price(
     return item
 
 
-# ── Item history (for suggestions) ───────────────────────────────
+# ── Item history (for suggestions & details) ─────────────────────
+
+
+async def _get_saved_detail(
+    session: AsyncSession,
+    chat_id: int,
+    name: str,
+) -> str | None:
+    """Look up saved detail/brand for an item from history."""
+    result = await session.execute(
+        select(ItemHistory.default_detail).where(
+            and_(
+                ItemHistory.chat_id == chat_id,
+                ItemHistory.name.ilike(name.strip()),
+                ItemHistory.default_detail.isnot(None),
+            )
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def set_item_detail(
+    session: AsyncSession,
+    chat_id: int,
+    item_name: str,
+    detail: str,
+) -> bool:
+    """
+    Save a default detail/brand for an item in history.
+
+    Also updates the description on any existing items in the active list.
+    Returns True if the history entry was found/created.
+    """
+    # Upsert the history entry
+    result = await session.execute(
+        select(ItemHistory).where(
+            and_(
+                ItemHistory.chat_id == chat_id,
+                ItemHistory.name.ilike(item_name.strip()),
+            )
+        )
+    )
+    entry = result.scalar_one_or_none()
+
+    if entry is None:
+        # Create a new history entry with the detail
+        entry = ItemHistory(
+            chat_id=chat_id,
+            name=item_name.strip(),
+            default_detail=detail,
+            times_added=0,
+        )
+        session.add(entry)
+    else:
+        entry.default_detail = detail
+
+    # Also update description on existing items in the active list
+    active_list = await get_or_create_active_list(session, chat_id)
+    items_result = await session.execute(
+        select(GroceryItem).where(
+            and_(
+                GroceryItem.list_id == active_list.id,
+                GroceryItem.name.ilike(item_name.strip()),
+            )
+        )
+    )
+    for item in items_result.scalars().all():
+        item.description = detail
+
+    await session.flush()
+    return True
 
 
 async def _upsert_item_history(
