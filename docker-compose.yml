@@ -15,8 +15,9 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-hopper_shopper}
     volumes:
       - pgdata:/var/lib/postgresql/data
-    ports:
-      - "${DB_PORT:-5432}:5432"
+    # Uncomment to expose DB port on host (not needed for bot-only setup)
+    # ports:
+    #   - "${DB_PORT:-5432}:5432"
     healthcheck:
       test: pg_isready -U ${POSTGRES_USER:-hopper}
       interval: 5s

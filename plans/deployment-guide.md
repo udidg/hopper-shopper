@@ -181,6 +181,7 @@ docker compose up -d
 
 | Task | Command |
 |------|---------|
+|Pull latest docker-compose file|curl -o docker-compose.yml https://raw.githubusercontent.com/udidg/hopper-shopper/main/docker-compose.yml|
 | View logs | `docker compose logs -f bot` |
 | Restart bot | `docker compose restart bot` |
 | Update to latest | `docker compose pull && docker compose up -d` |
