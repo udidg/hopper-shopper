@@ -262,6 +262,7 @@ async def guess_category_smart(item_name: str) -> str | None:
     # Only try LLM if Ollama is configured and reachable
     try:
         from bot.services.llm import classify_department, is_ollama_available
+
         if await is_ollama_available():
             llm_result = await classify_department(item_name)
             if llm_result is not None:
@@ -272,3 +273,44 @@ async def guess_category_smart(item_name: str) -> str | None:
         pass
 
     return None
+
+
+async def guess_categories_batch(item_names: list[str]) -> dict[str, str | None]:
+    """
+    Classify multiple items, using keywords first and LLM batch for the rest.
+
+    Returns a mapping of {item_name: hebrew_department_name}.
+    """
+    results: dict[str, str | None] = {}
+    needs_llm: list[str] = []
+
+    # First pass: keyword matching
+    for name in item_names:
+        category = guess_category(name)
+        if category is not None:
+            results[name] = category
+        else:
+            needs_llm.append(name)
+
+    # Second pass: LLM batch classification for unmatched items
+    if needs_llm:
+        try:
+            from bot.services.llm import (
+                classify_departments_batch,
+                is_ollama_available,
+            )
+
+            if await is_ollama_available():
+                llm_results = await classify_departments_batch(needs_llm)
+                for name, dept in llm_results.items():
+                    if dept and not is_hebrew(dept):
+                        dept = DEPT_EN_TO_HE.get(dept, dept)
+                    results[name] = dept
+            else:
+                for name in needs_llm:
+                    results[name] = None
+        except Exception:
+            for name in needs_llm:
+                results[name] = None
+
+    return results

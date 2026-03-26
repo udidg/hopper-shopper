@@ -87,14 +87,28 @@ def format_sorted_list(
             else:
                 item_text = f"  • {name}"
 
+            # Add quantity/unit if available
+            quantity = item.get("quantity")
+            unit = item.get("unit")
+            if quantity:
+                if unit:
+                    item_text += f" ({quantity} {unit})"
+                else:
+                    item_text += f" ({quantity})"
+
+            # Add brand if available
+            brand = item.get("brand")
+            if brand:
+                item_text += f" [{brand}]"
+
             # Add price if available
             price = item.get("price")
             if price is not None:
-                item_text += f" (₪{price:.2f})"
+                item_text += f" ₪{price:.2f}"
 
-            # Add description if available
+            # Add description if available (and different from brand)
             desc = item.get("description")
-            if desc:
+            if desc and desc != brand:
                 item_text += f" — {desc}"
 
             lines.append(item_text)
@@ -131,11 +145,25 @@ def format_plain_list(items: list[dict], list_name: str = "רשימת קניות
     if pending:
         for item in pending:
             line = f"  ☐ {item['name']}"
+            # Add quantity/unit
+            quantity = item.get("quantity")
+            unit = item.get("unit")
+            if quantity:
+                if unit:
+                    line += f" ({quantity} {unit})"
+                else:
+                    line += f" ({quantity})"
+            # Add brand
+            brand = item.get("brand")
+            if brand:
+                line += f" [{brand}]"
+            # Add price
             price = item.get("price")
             if price is not None:
-                line += f" (₪{price:.2f})"
+                line += f" ₪{price:.2f}"
+            # Add description (if different from brand)
             desc = item.get("description")
-            if desc:
+            if desc and desc != brand:
                 line += f" — {desc}"
             lines.append(line)
 
@@ -227,4 +255,6 @@ def format_help() -> str:
 
 💡 טיפים:
   • שלחו רשימה כטקסט חופשי (פריט בכל שורה) והבוט יזהה אותה אוטומטית
+  • כתבו בשפה חופשית: "תוסיף חלב ולחם", "קניתי ביצים", "מה ברשימה?"
+  • הבוט מזהה כמויות ומותגים: "2 קילו עגבניות שרי, חלב תנובה 1 ליטר"
   • השתמשו ב-/detail כדי לשמור מותג מועדף — למשל: /detail תפוחי אדמה של דוד משה"""

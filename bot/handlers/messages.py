@@ -1,4 +1,4 @@
-"""Message handler — auto-detect grocery lists from free-text messages."""
+"""Message handler — auto-detect grocery lists and understand natural language."""
 
 import logging
 
@@ -6,43 +6,53 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from bot.database import async_session
-from bot.services.formatter import format_items_added
+from bot.services.formatter import format_items_added, format_items_removed
 from bot.services.list_manager import (
     add_items,
+    add_items_structured,
+    clear_list,
+    get_list_items,
     get_or_create_active_list,
     get_or_create_user,
+    items_to_dicts,
+    mark_item_done,
+    remove_items,
 )
 from bot.services.parser import looks_like_grocery_list, parse_items_text
 
 logger = logging.getLogger(__name__)
 
 
-async def handle_text_message(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
+async def _try_intent_understanding(text: str) -> dict | None:
+    """Try to understand user intent via LLM. Returns None if unavailable."""
+    try:
+        from bot.services.llm import is_ollama_available, understand_intent
+
+        if await is_ollama_available():
+            return await understand_intent(text)
+    except Exception:
+        logger.debug("Intent understanding failed", exc_info=True)
+    return None
+
+
+async def _try_smart_parse(text: str) -> list[dict] | None:
+    """Try to parse items via LLM. Returns None if unavailable."""
+    try:
+        from bot.services.llm import is_ollama_available, parse_items_smart
+
+        if await is_ollama_available():
+            return await parse_items_smart(text)
+    except Exception:
+        logger.debug("Smart parsing failed", exc_info=True)
+    return None
+
+
+async def _handle_add_action(
+    update: Update,
+    item_names: list[str] | None = None,
+    parsed_items: list[dict] | None = None,
 ) -> None:
-    """
-    Handle plain text messages.
-
-    If the message looks like a grocery list (multiple lines of short items),
-    automatically parse and add the items.
-    """
-    if not update.message or not update.message.text:
-        return
-
-    text = update.message.text
-
-    # Skip commands
-    if text.startswith("/"):
-        return
-
-    # Check if this looks like a grocery list
-    if not looks_like_grocery_list(text):
-        return
-
-    item_names = parse_items_text(text)
-    if not item_names or len(item_names) < 2:
-        return
-
+    """Handle adding items — either from plain names or structured parsed items."""
     try:
         async with async_session() as session:
             async with session.begin():
@@ -62,23 +72,305 @@ async def handle_text_message(
                     user_id=user.id,
                 )
 
-                added = await add_items(
-                    session,
-                    list_id=grocery_list.id,
-                    chat_id=chat_id,
-                    item_names=item_names,
-                    user_id=user.id,
-                )
+                if parsed_items:
+                    added = await add_items_structured(
+                        session,
+                        list_id=grocery_list.id,
+                        chat_id=chat_id,
+                        parsed_items=parsed_items,
+                        user_id=user.id,
+                    )
+                elif item_names:
+                    added = await add_items(
+                        session,
+                        list_id=grocery_list.id,
+                        chat_id=chat_id,
+                        item_names=item_names,
+                        user_id=user.id,
+                    )
+                else:
+                    return
+
                 added_info = [
-                    {"name": item.name, "detail": item.description}
-                    for item in added
+                    _format_item_info(item) for item in added
                 ]
     except Exception:
-        logger.exception("Database error in message handler")
-        return  # Silently fail for auto-detection — don't spam the chat
+        logger.exception("Database error adding items")
+        return
+
+    await update.message.reply_text(format_items_added(added_info))
+
+
+def _format_item_info(item) -> dict:
+    """Format a GroceryItem into a dict for the formatter."""
+    detail_parts = []
+    if item.quantity:
+        qty_str = item.quantity
+        if item.unit:
+            qty_str += f" {item.unit}"
+        detail_parts.append(qty_str)
+    if item.brand:
+        detail_parts.append(item.brand)
+    if item.description and item.description != item.brand:
+        detail_parts.append(item.description)
+
+    return {
+        "name": item.name,
+        "detail": " | ".join(detail_parts) if detail_parts else item.description,
+    }
+
+
+async def _handle_remove_action(update: Update, item_names: list[str]) -> None:
+    """Handle removing items by name."""
+    if not item_names:
+        return
+
+    try:
+        async with async_session() as session:
+            async with session.begin():
+                tg_user = update.effective_user
+                chat_id = update.effective_chat.id
+
+                user = await get_or_create_user(
+                    session,
+                    telegram_id=tg_user.id,
+                    username=tg_user.username,
+                    display_name=tg_user.full_name,
+                )
+
+                grocery_list = await get_or_create_active_list(
+                    session, chat_id=chat_id, user_id=user.id
+                )
+
+                removed = await remove_items(session, grocery_list.id, item_names)
+    except Exception:
+        logger.exception("Database error removing items")
+        return
+
+    await update.message.reply_text(format_items_removed(removed))
+
+
+async def _handle_done_action(update: Update, item_names: list[str]) -> None:
+    """Handle marking items as done."""
+    if not item_names:
+        return
+
+    try:
+        async with async_session() as session:
+            async with session.begin():
+                tg_user = update.effective_user
+                chat_id = update.effective_chat.id
+
+                user = await get_or_create_user(
+                    session,
+                    telegram_id=tg_user.id,
+                    username=tg_user.username,
+                    display_name=tg_user.full_name,
+                )
+
+                grocery_list = await get_or_create_active_list(
+                    session, chat_id=chat_id, user_id=user.id
+                )
+
+                done_names = []
+                for name in item_names:
+                    item = await mark_item_done(
+                        session, grocery_list.id, name.strip()
+                    )
+                    if item:
+                        done_names.append(item.name)
+    except Exception:
+        logger.exception("Database error marking items done")
+        return
+
+    if done_names:
+        names_str = ", ".join(done_names)
+        await update.message.reply_text(f"✅ {names_str} סומנו כנקנו!")
+    else:
+        await update.message.reply_text("❌ הפריטים לא נמצאו ברשימה.")
+
+
+async def _handle_list_action(update: Update) -> None:
+    """Handle showing the list."""
+    from bot.services.formatter import format_plain_list
+
+    try:
+        async with async_session() as session:
+            async with session.begin():
+                tg_user = update.effective_user
+                chat_id = update.effective_chat.id
+
+                user = await get_or_create_user(
+                    session,
+                    telegram_id=tg_user.id,
+                    username=tg_user.username,
+                    display_name=tg_user.full_name,
+                )
+
+                grocery_list = await get_or_create_active_list(
+                    session, chat_id=chat_id, user_id=user.id
+                )
+
+                items = await get_list_items(session, grocery_list.id)
+                list_name = grocery_list.name
+    except Exception:
+        logger.exception("Database error listing items")
+        return
 
     await update.message.reply_text(
-        f"🔍 זיהיתי רשימת קניות!\n\n"
-        + format_items_added(added_info)
-        + "\n\nשלחו /sort למיון לפי מחלקות 🏪",
+        format_plain_list(items_to_dicts(items), list_name)
+    )
+
+
+async def _handle_sort_action(update: Update) -> None:
+    """Handle showing the sorted list."""
+    from bot.services.formatter import format_sorted_list
+
+    try:
+        async with async_session() as session:
+            async with session.begin():
+                tg_user = update.effective_user
+                chat_id = update.effective_chat.id
+
+                user = await get_or_create_user(
+                    session,
+                    telegram_id=tg_user.id,
+                    username=tg_user.username,
+                    display_name=tg_user.full_name,
+                )
+
+                grocery_list = await get_or_create_active_list(
+                    session, chat_id=chat_id, user_id=user.id
+                )
+
+                items = await get_list_items(session, grocery_list.id)
+                list_name = grocery_list.name
+    except Exception:
+        logger.exception("Database error sorting items")
+        return
+
+    await update.message.reply_text(
+        format_sorted_list(items_to_dicts(items), list_name)
+    )
+
+
+async def _handle_clear_action(update: Update) -> None:
+    """Handle clearing the list."""
+    try:
+        async with async_session() as session:
+            async with session.begin():
+                tg_user = update.effective_user
+                chat_id = update.effective_chat.id
+
+                user = await get_or_create_user(
+                    session,
+                    telegram_id=tg_user.id,
+                    username=tg_user.username,
+                    display_name=tg_user.full_name,
+                )
+
+                grocery_list = await get_or_create_active_list(
+                    session, chat_id=chat_id, user_id=user.id
+                )
+
+                count = await clear_list(session, grocery_list.id)
+    except Exception:
+        logger.exception("Database error clearing list")
+        return
+
+    if count > 0:
+        await update.message.reply_text(f"🗑️ הרשימה נוקתה! ({count} פריטים הוסרו)")
+    else:
+        await update.message.reply_text("📝 הרשימה כבר ריקה!")
+
+
+async def _handle_help_action(update: Update) -> None:
+    """Handle help request."""
+    from bot.services.formatter import format_help
+
+    await update.message.reply_text(format_help())
+
+
+async def handle_text_message(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """
+    Handle plain text messages.
+
+    Pipeline:
+    1. Try LLM intent understanding (natural language commands)
+    2. If intent is "add" or looks like a grocery list, try LLM smart parsing
+    3. Fall back to regex-based parsing
+    """
+    if not update.message or not update.message.text:
+        return
+
+    text = update.message.text
+
+    # Skip commands
+    if text.startswith("/"):
+        return
+
+    # ── Step 1: Try LLM intent understanding ──────────────────────
+    intent = await _try_intent_understanding(text)
+
+    if intent and intent["action"] != "unknown":
+        action = intent["action"]
+        items = intent.get("items", [])
+
+        if action == "add" and items:
+            # For add intents, try smart parsing on the original text
+            # to extract quantity/unit/brand
+            parsed = await _try_smart_parse(text)
+            if parsed:
+                await _handle_add_action(update, parsed_items=parsed)
+            else:
+                await _handle_add_action(update, item_names=items)
+            return
+
+        if action == "remove" and items:
+            await _handle_remove_action(update, items)
+            return
+
+        if action == "done" and items:
+            await _handle_done_action(update, items)
+            return
+
+        if action == "list":
+            await _handle_list_action(update)
+            return
+
+        if action == "sort":
+            await _handle_sort_action(update)
+            return
+
+        if action == "clear":
+            await _handle_clear_action(update)
+            return
+
+        if action == "help":
+            await _handle_help_action(update)
+            return
+
+    # ── Step 2: Check if it looks like a grocery list ─────────────
+    if not looks_like_grocery_list(text):
+        return
+
+    # ── Step 3: Try LLM smart parsing ────────────────────────────
+    parsed_items = await _try_smart_parse(text)
+    if parsed_items and len(parsed_items) >= 1:
+        await _handle_add_action(update, parsed_items=parsed_items)
+        await update.message.reply_text(
+            "\nשלחו /sort למיון לפי מחלקות 🏪",
+        )
+        return
+
+    # ── Step 4: Fall back to regex parsing ────────────────────────
+    item_names = parse_items_text(text)
+    if not item_names or len(item_names) < 2:
+        return
+
+    await _handle_add_action(update, item_names=item_names)
+    await update.message.reply_text(
+        "\n🔍 זיהיתי רשימת קניות!\nשלחו /sort למיון לפי מחלקות 🏪",
     )

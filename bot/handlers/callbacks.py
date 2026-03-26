@@ -168,10 +168,22 @@ def _build_shopping_keyboard(items) -> InlineKeyboardMarkup:
         ])
 
         for item in dept_items:
+            # Build label with quantity/unit/brand
+            name_parts = [item.name]
+            if item.quantity:
+                if item.unit:
+                    name_parts.append(f"({item.quantity} {item.unit})")
+                else:
+                    name_parts.append(f"({item.quantity})")
+            if item.brand:
+                name_parts.append(f"[{item.brand}]")
+
+            display_name = " ".join(name_parts)
+
             if item.is_done:
-                label = f"✅ {item.name}"
+                label = f"✅ {display_name}"
             else:
-                label = f"☐ {item.name}"
+                label = f"☐ {display_name}"
 
             keyboard.append([
                 InlineKeyboardButton(

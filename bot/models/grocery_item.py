@@ -16,6 +16,15 @@ class GroceryItem(Base):
         ForeignKey("grocery_lists.id", ondelete="CASCADE"), nullable=False, index=True
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    quantity: Mapped[str | None] = mapped_column(
+        String(50), nullable=True
+    )  # e.g. "2", "500"
+    unit: Mapped[str | None] = mapped_column(
+        String(50), nullable=True
+    )  # e.g. "קילו", "גרם", "ליטר"
+    brand: Mapped[str | None] = mapped_column(
+        String(100), nullable=True
+    )  # e.g. "תנובה", "עמק"
     category: Mapped[str | None] = mapped_column(
         String(100), nullable=True
     )  # Hebrew department name, e.g. "מוצרי חלב"

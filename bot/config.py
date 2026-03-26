@@ -12,9 +12,9 @@ class Settings(BaseSettings):
     # Database
     database_url: str
 
-    # Ollama LLM (optional – for smart department classification)
+    # Ollama LLM (optional – for smart department classification & NLU)
     ollama_url: str = ""  # e.g. "http://ollama:11434"
-    ollama_model: str = "gemma3:1b"
+    ollama_model: str = "gemma3:4b"
 
     class Config:
         env_file = ".env"

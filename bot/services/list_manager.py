@@ -9,7 +9,7 @@ from bot.models.grocery_list import GroceryList
 from bot.models.grocery_item import GroceryItem
 from bot.models.item_history import ItemHistory
 from bot.models.user import User
-from bot.services.grouping import guess_category_smart
+from bot.services.grouping import guess_categories_batch, guess_category_smart
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +102,9 @@ def items_to_dicts(items: list[GroceryItem]) -> list[dict]:
         {
             "id": item.id,
             "name": item.name,
+            "quantity": item.quantity,
+            "unit": item.unit,
+            "brand": item.brand,
             "category": item.category,
             "is_done": item.is_done,
             "price": float(item.price) if item.price is not None else None,
@@ -124,7 +127,7 @@ async def add_items(
     """
     Add multiple items to a grocery list.
 
-    Automatically classifies each item into a department.
+    Uses batch classification for efficiency (one LLM call for all items).
     Auto-applies saved details/brand from item history.
     Updates item history for future suggestions.
     """
@@ -138,9 +141,11 @@ async def add_items(
     )
     max_order = result.scalar() or 0
 
+    # Batch classify all items at once (keyword first, then LLM for the rest)
+    categories = await guess_categories_batch(item_names)
+
     for i, name in enumerate(item_names):
-        # Classify the item
-        category = await guess_category_smart(name)
+        category = categories.get(name)
 
         # Look up saved detail/brand from history
         saved_detail = await _get_saved_detail(session, chat_id, name)
@@ -150,6 +155,70 @@ async def add_items(
             name=name,
             category=category,
             description=saved_detail,
+            added_by=user_id,
+            sort_order=max_order + i + 1,
+        )
+        session.add(item)
+        added.append(item)
+
+        # Update item history
+        await _upsert_item_history(session, chat_id, name, category)
+
+    await session.flush()
+    return added
+
+
+async def add_items_structured(
+    session: AsyncSession,
+    list_id: int,
+    chat_id: int,
+    parsed_items: list[dict],
+    user_id: int | None = None,
+) -> list[GroceryItem]:
+    """
+    Add multiple structured items (from LLM parsing) to a grocery list.
+
+    Each item in parsed_items should have keys: name, quantity, unit, brand.
+    Uses batch classification for efficiency.
+    """
+    added: list[GroceryItem] = []
+
+    if not parsed_items:
+        return added
+
+    # Get current max sort_order
+    result = await session.execute(
+        select(func.coalesce(func.max(GroceryItem.sort_order), 0)).where(
+            GroceryItem.list_id == list_id
+        )
+    )
+    max_order = result.scalar() or 0
+
+    # Batch classify all items at once
+    item_names = [p["name"] for p in parsed_items]
+    categories = await guess_categories_batch(item_names)
+
+    for i, parsed in enumerate(parsed_items):
+        name = parsed["name"]
+        category = categories.get(name)
+
+        # Look up saved detail/brand from history
+        saved_detail = await _get_saved_detail(session, chat_id, name)
+
+        # Build description from brand + saved detail
+        brand = parsed.get("brand")
+        description = saved_detail
+        if brand and not saved_detail:
+            description = brand
+
+        item = GroceryItem(
+            list_id=list_id,
+            name=name,
+            quantity=parsed.get("quantity"),
+            unit=parsed.get("unit"),
+            brand=brand,
+            category=category,
+            description=description,
             added_by=user_id,
             sort_order=max_order + i + 1,
         )
