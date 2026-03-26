@@ -1,6 +1,8 @@
 """Hopper Shopper Telegram Bot — entry point."""
 
+import asyncio
 import logging
+import sys
 
 from telegram import BotCommand, Update
 from telegram.error import Conflict, NetworkError, TimedOut
@@ -58,21 +60,47 @@ BOT_COMMANDS = [
 
 
 async def post_init(application: Application) -> None:
-    """Set bot commands on startup so they appear in the Telegram menu."""
+    """Clear stale sessions and set bot commands on startup."""
+    # Drop any existing webhook / getUpdates session so we don't 409
+    await application.bot.delete_webhook(drop_pending_updates=True)
+    logger.info("Cleared any stale webhook / polling session.")
+
     await application.bot.set_my_commands(BOT_COMMANDS)
     logger.info("Bot commands registered in Telegram menu.")
 
 
+# Track consecutive conflict errors to decide when to bail out
+_conflict_count = 0
+_MAX_CONFLICTS = 5
+
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle errors globally."""
+    global _conflict_count
     error = context.error
 
     if isinstance(error, Conflict):
+        _conflict_count += 1
         logger.error(
-            "409 Conflict — another bot instance is running with the same token! "
-            "Stop the other instance and restart."
+            "409 Conflict (#%d) — another bot instance is running with the "
+            "same token! Stop the other instance and restart.",
+            _conflict_count,
         )
+        if _conflict_count >= _MAX_CONFLICTS:
+            logger.critical(
+                "Received %d consecutive 409 Conflict errors. "
+                "Shutting down to avoid infinite retry loop. "
+                "Resolve the duplicate instance and restart the container.",
+                _conflict_count,
+            )
+            # Schedule a graceful shutdown
+            asyncio.get_event_loop().call_soon(
+                lambda: sys.exit(1)
+            )
         return
+
+    # Reset conflict counter on any other error (means polling is working)
+    _conflict_count = 0
 
     if isinstance(error, (NetworkError, TimedOut)):
         logger.warning("Network error (will retry): %s", error)
@@ -135,7 +163,10 @@ def main() -> None:
     )
 
     logger.info("Bot is ready! Starting polling...")
-    app.run_polling(drop_pending_updates=True)
+    app.run_polling(
+        drop_pending_updates=True,
+        allowed_updates=Update.ALL_TYPES,
+    )
 
 
 if __name__ == "__main__":
