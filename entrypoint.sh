@@ -1,6 +1,8 @@
 #!/bin/bash
 set -e
 
+export PYTHONPATH=/app:$PYTHONPATH
+
 echo "=== Hopper Shopper Bot ==="
 
 # Clear old alembic version tracking if it exists (from the old backend)
