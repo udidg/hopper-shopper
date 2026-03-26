@@ -113,7 +113,19 @@ nano .env
 
 ---
 
-## Step 4: Start the Bot
+## Step 4: Create the Docker Network
+
+The compose file uses an **external** Docker network to avoid brief network disruptions on the NAS when Docker creates/destroys bridge networks during `up`/`down` cycles.
+
+Create it once (this persists across reboots):
+
+```bash
+docker network create hopper-net
+```
+
+---
+
+## Step 5: Start the Bot
 
 ```bash
 docker compose pull
@@ -142,7 +154,7 @@ INFO - Bot is ready! Starting polling...
 
 ---
 
-## Step 5: Verify
+## Step 6: Verify
 
 1. Open Telegram and message your bot
 2. Send `/start` — you should get a welcome message
@@ -187,7 +199,8 @@ docker compose up -d
 | Update to latest | `docker compose pull && docker compose up -d` |
 | Backup database | `docker compose exec db pg_dump -U hopper hopper_shopper > backup.sql` |
 | Restore database | `cat backup.sql \| docker compose exec -T db psql -U hopper hopper_shopper` |
-| Stop everything | `docker compose down` |
+| Stop (keep network) | `docker compose stop` |
+| Stop (remove containers) | `docker compose down` |
 | Full reset (⚠️) | `docker compose down -v` (deletes database!) |
 
 ---
@@ -203,3 +216,5 @@ docker compose up -d
 | Migration fails on startup | Check `docker compose logs bot` for the specific SQL error. Ensure the database is accessible. |
 | Container keeps restarting | Check logs for Python errors. Common cause: missing or invalid `TELEGRAM_BOT_TOKEN`. |
 | Items not classified into departments | Item may not be in the keyword dictionary. Enable Ollama for smarter classification. |
+| `network hopper-net declared as external, but could not be found` | Run `docker network create hopper-net` on the NAS. |
+| Brief network dropout on `docker compose up` | The external network should prevent this. If it persists, check `cat /proc/sys/net/bridge/bridge-nf-call-iptables` — set to `0` if it's `1`. |

@@ -1,7 +1,14 @@
+# Pre-create the external network once on your NAS:
+#   docker network create hopper-net
+# This avoids Docker recreating the bridge on every up/down cycle,
+# which can briefly disrupt host networking on some NAS devices.
+
 services:
   bot:
     image: udidg/hopper-shopper-bot:latest
     env_file: .env
+    networks:
+      - hopper-net
     depends_on:
       db:
         condition: service_healthy
@@ -21,6 +28,8 @@ services:
 
   db:
     image: postgres:16-alpine
+    networks:
+      - hopper-net
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-hopper}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
@@ -38,6 +47,8 @@ services:
   ollama:
     image: ollama/ollama
     profiles: ["ollama"]
+    networks:
+      - hopper-net
     volumes:
       - ollama_data:/root/.ollama
     restart: unless-stopped
@@ -46,3 +57,7 @@ services:
 volumes:
   pgdata:
   ollama_data:
+
+networks:
+  hopper-net:
+    external: true
