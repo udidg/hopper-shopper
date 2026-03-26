@@ -5,13 +5,17 @@ export PYTHONPATH=/app:$PYTHONPATH
 
 echo "=== Hopper Shopper Bot ==="
 
-# Clear old alembic version tracking if it exists (from the old backend)
-# The new bot uses its own migration chain
+# Clear old alembic version tracking if it exists (from the old Mini App backend).
+# Only reset if the revision is NOT part of our bot migration chain.
+BOT_REVISIONS="001_initial_bot 002_add_detail 003_add_qty_brand"
+
 echo "Checking for old migration state..."
 python -c "
 import asyncio
 from sqlalchemy.ext.asyncio import create_async_engine
 from bot.config import settings
+
+BOT_REVISIONS = set('$BOT_REVISIONS'.split())
 
 async def reset_alembic():
     engine = create_async_engine(settings.database_url)
@@ -23,14 +27,14 @@ async def reset_alembic():
             )
         )
         row = result.fetchone()
-        if row and row[0] != '001_initial_bot':
-            print(f'  Found old migration: {row[0]} — resetting...')
+        if row and row[0] not in BOT_REVISIONS:
+            print(f'  Found old (non-bot) migration: {row[0]} — resetting...')
             await conn.execute(
                 __import__('sqlalchemy').text('DELETE FROM alembic_version')
             )
             print('  Old migration state cleared.')
         elif row:
-            print(f'  Migration already at: {row[0]}')
+            print(f'  Migration already at: {row[0]} (valid)')
         else:
             print('  No existing migration state.')
     await engine.dispose()

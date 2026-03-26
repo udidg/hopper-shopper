@@ -16,18 +16,25 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "grocery_items",
-        sa.Column("quantity", sa.String(50), nullable=True),
-    )
-    op.add_column(
-        "grocery_items",
-        sa.Column("unit", sa.String(50), nullable=True),
-    )
-    op.add_column(
-        "grocery_items",
-        sa.Column("brand", sa.String(100), nullable=True),
-    )
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    existing_cols = {c["name"] for c in inspector.get_columns("grocery_items")}
+
+    if "quantity" not in existing_cols:
+        op.add_column(
+            "grocery_items",
+            sa.Column("quantity", sa.String(50), nullable=True),
+        )
+    if "unit" not in existing_cols:
+        op.add_column(
+            "grocery_items",
+            sa.Column("unit", sa.String(50), nullable=True),
+        )
+    if "brand" not in existing_cols:
+        op.add_column(
+            "grocery_items",
+            sa.Column("brand", sa.String(100), nullable=True),
+        )
 
 
 def downgrade() -> None:
