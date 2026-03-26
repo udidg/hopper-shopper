@@ -64,6 +64,11 @@ volumes:
   ollama_data:
 
 networks:
+  # Explicitly disable the auto-created "default" network.
+  # Without this, Compose creates hopper-shopper_default with a random
+  # subnet (often 192.168.x.x) that can conflict with your LAN.
+  default:
+    driver: none
   hopper-net:
     driver: bridge
     ipam:
