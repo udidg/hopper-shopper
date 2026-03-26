@@ -186,8 +186,18 @@ def main() -> None:
     # ── Force-close any stale polling session BEFORE building the app ──
     # This prevents the 409 Conflict that occurs when a previous instance's
     # getUpdates long-poll is still active (e.g. during container restarts).
+    #
+    # NOTE: asyncio.run() creates and closes an event loop, which in
+    # Python 3.12+ means get_event_loop() will fail afterwards.  We must
+    # create a fresh loop so that run_polling() (which calls
+    # get_event_loop internally) finds one.
     logger.info("Clearing any stale Telegram polling session...")
     asyncio.run(_force_close_stale_session(settings.telegram_bot_token))
+
+    # Restore a fresh event loop after asyncio.run() closed the previous one.
+    # Python 3.12+ no longer auto-creates a loop in get_event_loop().
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
     # Build the application with lifecycle hooks
     app = (
