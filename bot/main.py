@@ -110,6 +110,8 @@ async def _force_close_stale_session(token: str) -> None:
 
 async def post_init(application: Application) -> None:
     """Set bot commands on startup (session already cleared before build)."""
+    global _net_error_count
+    _net_error_count = 0  # Reset network backoff — we just connected successfully
     await application.bot.set_my_commands(BOT_COMMANDS)
     logger.info("Bot commands registered in Telegram menu.")
 
@@ -133,10 +135,20 @@ async def post_shutdown(application: Application) -> None:
 _conflict_count = 0
 _MAX_CONFLICTS = 5
 
+# Track consecutive network errors for exponential backoff
+_net_error_count = 0
+_NET_BACKOFF_BASE = 1.0   # Start with 1 second
+_NET_BACKOFF_MAX = 30.0   # Cap at 30 seconds
+
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle errors globally."""
-    global _conflict_count
+    """Handle errors globally with exponential backoff on network errors.
+
+    Without backoff, python-telegram-bot retries getUpdates immediately after
+    a network error, creating a tight loop of failed HTTP requests that can
+    saturate a home router's upload pipe and cause internet drops.
+    """
+    global _conflict_count, _net_error_count
     error = context.error
 
     if isinstance(error, Conflict):
@@ -164,8 +176,21 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     _conflict_count = 0
 
     if isinstance(error, (NetworkError, TimedOut)):
-        logger.warning("Network error (will retry): %s", error)
+        _net_error_count += 1
+        backoff = min(_NET_BACKOFF_BASE * (2 ** (_net_error_count - 1)), _NET_BACKOFF_MAX)
+        logger.warning(
+            "Network error #%d (backoff %.1fs before retry): %s",
+            _net_error_count,
+            backoff,
+            error,
+        )
+        # Sleep here to prevent the polling loop from immediately retrying
+        # and flooding the router with rapid-fire HTTP requests
+        await asyncio.sleep(backoff)
         return
+
+    # Any non-network error means the connection is working — reset backoff
+    _net_error_count = 0
 
     logger.error("Unhandled exception:", exc_info=context.error)
 
@@ -199,12 +224,15 @@ def main() -> None:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    # Build the application with lifecycle hooks
+    # Build the application with lifecycle hooks.
+    # connection_pool_size limits concurrent HTTP connections to Telegram,
+    # preventing connection storms that can overwhelm a home router.
     app = (
         Application.builder()
         .token(settings.telegram_bot_token)
         .post_init(post_init)
         .post_shutdown(post_shutdown)
+        .connection_pool_size(8)
         .build()
     )
 
@@ -248,6 +276,23 @@ def main() -> None:
     app.run_polling(
         drop_pending_updates=True,
         allowed_updates=Update.ALL_TYPES,
+        # ── Network-friendly polling parameters ──────────────────
+        # poll_interval: seconds between getUpdates calls (default 0.0).
+        # Setting to 1.0 prevents a tight loop that floods the router
+        # with rapid HTTP requests when the network is healthy.
+        poll_interval=1.0,
+        # timeout: Telegram long-poll timeout in seconds (default 10).
+        # This is how long the server holds the connection open waiting
+        # for new updates. 15s is a good balance between responsiveness
+        # and connection efficiency.
+        timeout=15,
+        # read_timeout: max seconds to wait for a response from Telegram.
+        # Must be > timeout to avoid false timeouts during long-polls.
+        read_timeout=20,
+        # connect_timeout: max seconds to establish a TCP connection.
+        connect_timeout=10,
+        # write_timeout: max seconds to send the request body.
+        write_timeout=10,
     )
 
 
