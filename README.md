@@ -22,11 +22,12 @@ Send items, sort them by store department, and shop interactively — all in Heb
 |---------|-------------|
 | `/add פריט1, פריט2` | הוספת פריטים לרשימה |
 | `/remove פריט` | הסרת פריט מהרשימה |
-| `/list` | הצגת הרשימה הנוכחית |
+| `/list` | הצגת הרשימה הנוכחית (עם הצעות מהיסטוריה כשריקה) |
 | `/sort` | מיון הרשימה לפי מחלקות |
 | `/done פריט` | סימון פריט כנקנה |
 | `/undone פריט` | ביטול סימון פריט |
-| `/clear` | ניקוי כל הרשימה |
+| `/clear` | ניקוי כל הרשימה (עם אישור) |
+| `/cleardone` | ניקוי רק פריטים שנקנו |
 | `/shop` | מצב קניות עם כפתורים אינטראקטיביים |
 | `/detail פריט פרטים` | שמירת מותג/פרטים לפריט |
 | `/price פריט מחיר` | עדכון מחיר פריט |
@@ -58,9 +59,17 @@ Send a message in a group chat:
 במבה
 ```
 
-The bot auto-detects it as a grocery list. Then send `/sort`:
+The bot auto-detects it as a grocery list and **automatically shows the sorted view**:
 
 ```
+✅ 6 פריטים נוספו לרשימה:
+  • חלב
+  • עגבניות
+  • שניצל
+  • לחם
+  • אקונומיקה
+  • במבה
+
 🛒 רשימת קניות
 
 🥬 ירקות ופירות
@@ -83,6 +92,15 @@ The bot auto-detects it as a grocery list. Then send `/sort`:
 
 📊 6 פריטים
 ```
+
+## UX Highlights
+
+- **🔄 Auto-Sort** — When you send a multi-item grocery list, the bot adds items AND shows the sorted view automatically
+- **⌨️ Typing Indicator** — Bot shows "typing..." during LLM processing so you know it's working
+- **⚠️ Safe Clear** — `/clear` asks for confirmation before deleting; offers to clear only purchased items
+- **🧹 Clear Done** — `/cleardone` removes only purchased items, keeping your pending list intact
+- **📝 Smart Empty State** — When the list is empty, `/list` suggests your most frequently bought items as quick-add buttons
+- **🎉 Shopping Completion** — When all items are checked off in `/shop`, shows a summary with cleanup actions
 
 ## Tech Stack
 

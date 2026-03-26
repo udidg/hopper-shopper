@@ -2,6 +2,7 @@
 
 import logging
 import unicodedata
+from dataclasses import dataclass, field
 
 from sqlalchemy import select, and_, delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -138,6 +139,27 @@ def items_to_dicts(items: list[GroceryItem]) -> list[dict]:
 # ── Item operations ──────────────────────────────────────────────
 
 
+@dataclass
+class AddItemsResult:
+    """Result of adding items, including duplicate detection info."""
+
+    added: list[GroceryItem] = field(default_factory=list)
+    duplicates: list[str] = field(default_factory=list)
+
+
+async def _get_existing_item_names(
+    session: AsyncSession,
+    list_id: int,
+) -> set[str]:
+    """Get a set of lowercased item names already in the list."""
+    result = await session.execute(
+        select(func.lower(GroceryItem.name)).where(
+            GroceryItem.list_id == list_id
+        )
+    )
+    return {row[0] for row in result.fetchall()}
+
+
 async def add_items(
     session: AsyncSession,
     list_id: int,
@@ -152,12 +174,25 @@ async def add_items(
     Auto-applies saved details/brand from item history.
     Updates item history for future suggestions.
     Normalizes item names for consistent storage.
+    Silently skips duplicates (items already in the list).
     """
     added: list[GroceryItem] = []
 
     # Normalize all names
     item_names = [_normalize_name(n) for n in item_names if _normalize_name(n)]
     if not item_names:
+        return added
+
+    # Check for duplicates
+    existing_names = await _get_existing_item_names(session, list_id)
+
+    # Filter out duplicates
+    new_names: list[str] = []
+    for name in item_names:
+        if name.lower() not in existing_names:
+            new_names.append(name)
+
+    if not new_names:
         return added
 
     # Get current max sort_order
@@ -169,9 +204,9 @@ async def add_items(
     max_order = result.scalar() or 0
 
     # Batch classify all items at once (keyword first, then LLM for the rest)
-    categories = await guess_categories_batch(item_names)
+    categories = await guess_categories_batch(new_names)
 
-    for i, name in enumerate(item_names):
+    for i, name in enumerate(new_names):
         category = categories.get(name)
 
         # Look up saved detail/brand from history
@@ -195,6 +230,71 @@ async def add_items(
     return added
 
 
+async def add_items_with_duplicates(
+    session: AsyncSession,
+    list_id: int,
+    chat_id: int,
+    item_names: list[str],
+    user_id: int | None = None,
+) -> AddItemsResult:
+    """
+    Add multiple items to a grocery list, tracking duplicates.
+
+    Same as add_items() but returns an AddItemsResult with both
+    added items and skipped duplicate names.
+    """
+    result = AddItemsResult()
+
+    # Normalize all names
+    item_names = [_normalize_name(n) for n in item_names if _normalize_name(n)]
+    if not item_names:
+        return result
+
+    # Check for duplicates
+    existing_names = await _get_existing_item_names(session, list_id)
+
+    new_names: list[str] = []
+    for name in item_names:
+        if name.lower() in existing_names:
+            result.duplicates.append(name)
+        else:
+            new_names.append(name)
+
+    if not new_names:
+        return result
+
+    # Get current max sort_order
+    db_result = await session.execute(
+        select(func.coalesce(func.max(GroceryItem.sort_order), 0)).where(
+            GroceryItem.list_id == list_id
+        )
+    )
+    max_order = db_result.scalar() or 0
+
+    # Batch classify all items at once
+    categories = await guess_categories_batch(new_names)
+
+    for i, name in enumerate(new_names):
+        category = categories.get(name)
+        saved_detail = await _get_saved_detail(session, chat_id, name)
+
+        item = GroceryItem(
+            list_id=list_id,
+            name=name,
+            category=category,
+            description=saved_detail,
+            added_by=user_id,
+            sort_order=max_order + i + 1,
+        )
+        session.add(item)
+        result.added.append(item)
+
+        await _upsert_item_history(session, chat_id, name, category)
+
+    await session.flush()
+    return result
+
+
 async def add_items_structured(
     session: AsyncSession,
     list_id: int,
@@ -208,6 +308,7 @@ async def add_items_structured(
     Each item in parsed_items should have keys: name, quantity, unit, brand.
     Uses batch classification for efficiency.
     Normalizes item names for consistent storage.
+    Silently skips duplicates (items already in the list).
     """
     added: list[GroceryItem] = []
 
@@ -222,6 +323,16 @@ async def add_items_structured(
     if not parsed_items:
         return added
 
+    # Check for duplicates
+    existing_names = await _get_existing_item_names(session, list_id)
+    new_parsed: list[dict] = []
+    for p in parsed_items:
+        if p["name"].lower() not in existing_names:
+            new_parsed.append(p)
+
+    if not new_parsed:
+        return added
+
     # Get current max sort_order
     result = await session.execute(
         select(func.coalesce(func.max(GroceryItem.sort_order), 0)).where(
@@ -231,10 +342,10 @@ async def add_items_structured(
     max_order = result.scalar() or 0
 
     # Batch classify all items at once
-    item_names = [p["name"] for p in parsed_items]
+    item_names = [p["name"] for p in new_parsed]
     categories = await guess_categories_batch(item_names)
 
-    for i, parsed in enumerate(parsed_items):
+    for i, parsed in enumerate(new_parsed):
         name = parsed["name"]
         category = categories.get(name)
 
@@ -268,6 +379,146 @@ async def add_items_structured(
     return added
 
 
+async def add_items_structured_with_duplicates(
+    session: AsyncSession,
+    list_id: int,
+    chat_id: int,
+    parsed_items: list[dict],
+    user_id: int | None = None,
+) -> AddItemsResult:
+    """
+    Add multiple structured items, tracking duplicates.
+
+    Same as add_items_structured() but returns an AddItemsResult with both
+    added items and skipped duplicate names.
+    """
+    result = AddItemsResult()
+
+    if not parsed_items:
+        return result
+
+    # Normalize names
+    for p in parsed_items:
+        p["name"] = _normalize_name(p.get("name", ""))
+    parsed_items = [p for p in parsed_items if p["name"]]
+
+    if not parsed_items:
+        return result
+
+    # Check for duplicates
+    existing_names = await _get_existing_item_names(session, list_id)
+    new_parsed: list[dict] = []
+    for p in parsed_items:
+        if p["name"].lower() in existing_names:
+            result.duplicates.append(p["name"])
+        else:
+            new_parsed.append(p)
+
+    if not new_parsed:
+        return result
+
+    # Get current max sort_order
+    db_result = await session.execute(
+        select(func.coalesce(func.max(GroceryItem.sort_order), 0)).where(
+            GroceryItem.list_id == list_id
+        )
+    )
+    max_order = db_result.scalar() or 0
+
+    # Batch classify all items at once
+    item_names = [p["name"] for p in new_parsed]
+    categories = await guess_categories_batch(item_names)
+
+    for i, parsed in enumerate(new_parsed):
+        name = parsed["name"]
+        category = categories.get(name)
+        saved_detail = await _get_saved_detail(session, chat_id, name)
+
+        brand = parsed.get("brand")
+        description = saved_detail
+        if brand and not saved_detail:
+            description = brand
+
+        item = GroceryItem(
+            list_id=list_id,
+            name=name,
+            quantity=parsed.get("quantity"),
+            unit=parsed.get("unit"),
+            brand=brand,
+            category=category,
+            description=description,
+            added_by=user_id,
+            sort_order=max_order + i + 1,
+        )
+        session.add(item)
+        result.added.append(item)
+
+        await _upsert_item_history(session, chat_id, name, category)
+
+    await session.flush()
+    return result
+
+
+async def _fuzzy_find_items(
+    session: AsyncSession,
+    list_id: int,
+    name: str,
+) -> list[GroceryItem]:
+    """Find items by name with fuzzy matching.
+
+    Strategy:
+    1. Try exact match (case-insensitive)
+    2. Try substring containment (name is contained in item, or item is contained in name)
+    3. Return matches sorted by name length (shortest = most specific match first)
+    """
+    normalized = _normalize_name(name)
+
+    # Step 1: Exact match
+    result = await session.execute(
+        select(GroceryItem).where(
+            and_(
+                GroceryItem.list_id == list_id,
+                GroceryItem.name.ilike(normalized),
+            )
+        )
+    )
+    items = list(result.scalars().all())
+    if items:
+        return items
+
+    # Step 2: Substring containment — search term is part of item name
+    result = await session.execute(
+        select(GroceryItem).where(
+            and_(
+                GroceryItem.list_id == list_id,
+                GroceryItem.name.ilike(f"%{normalized}%"),
+            )
+        )
+    )
+    items = list(result.scalars().all())
+    if items:
+        # Sort by name length (shortest first = most specific match)
+        items.sort(key=lambda i: len(i.name))
+        return items
+
+    # Step 3: Item name is part of search term (e.g. searching "חלב תנובה" matches "חלב")
+    # Load all items and check if any item name is contained in the search term
+    result = await session.execute(
+        select(GroceryItem).where(GroceryItem.list_id == list_id)
+    )
+    all_items = list(result.scalars().all())
+    matches = [
+        i for i in all_items
+        if i.name.lower() in normalized.lower()
+    ]
+    if matches:
+        # Sort by name length descending (longest match first = most specific)
+        matches.sort(key=lambda i: len(i.name), reverse=True)
+        return matches
+
+    return []
+
+
 async def remove_items(
     session: AsyncSession,
     list_id: int,
@@ -275,26 +526,19 @@ async def remove_items(
 ) -> list[str]:
     """Remove items from a grocery list by name.
 
-    Returns names of removed items. Removes ALL matches for each name
-    (handles duplicates correctly).
+    Returns names of removed items. Uses fuzzy matching when exact match fails.
+    Removes ALL matches for each name (handles duplicates correctly).
     """
     removed: list[str] = []
 
     for name in item_names:
-        normalized = _normalize_name(name)
-        result = await session.execute(
-            select(GroceryItem).where(
-                and_(
-                    GroceryItem.list_id == list_id,
-                    GroceryItem.name.ilike(normalized),
-                )
-            )
-        )
-        items = result.scalars().all()
+        items = await _fuzzy_find_items(session, list_id, name)
         if items:
             removed.append(items[0].name)  # Use the actual stored name
             for item in items:
-                await session.delete(item)
+                # Only remove items with the same name as the best match
+                if item.name.lower() == items[0].name.lower():
+                    await session.delete(item)
 
     await session.flush()
     return removed
@@ -306,23 +550,20 @@ async def mark_item_done(
     item_name: str,
     done: bool = True,
 ) -> GroceryItem | None:
-    """Mark an item as done/undone. Returns the item or None if not found."""
-    normalized = _normalize_name(item_name)
-    result = await session.execute(
-        select(GroceryItem).where(
-            and_(
-                GroceryItem.list_id == list_id,
-                GroceryItem.name.ilike(normalized),
-            )
-        )
-    )
-    item = result.scalar_one_or_none()
+    """Mark an item as done/undone. Uses fuzzy matching when exact match fails.
 
-    if item:
+    Returns the item or None if not found.
+    """
+    items = await _fuzzy_find_items(session, list_id, item_name)
+
+    if items:
+        # Use the best (first) match
+        item = items[0]
         item.is_done = done
         await session.flush()
+        return item
 
-    return item
+    return None
 
 
 async def mark_item_done_by_id(
@@ -372,23 +613,16 @@ async def set_item_price(
     item_name: str,
     price: float,
 ) -> GroceryItem | None:
-    """Set the price for an item. Returns the item or None if not found."""
-    normalized = _normalize_name(item_name)
-    result = await session.execute(
-        select(GroceryItem).where(
-            and_(
-                GroceryItem.list_id == list_id,
-                GroceryItem.name.ilike(normalized),
-            )
-        )
-    )
-    item = result.scalar_one_or_none()
+    """Set the price for an item. Uses fuzzy matching. Returns the item or None."""
+    items = await _fuzzy_find_items(session, list_id, item_name)
 
-    if item:
+    if items:
+        item = items[0]
         item.price = price
         await session.flush()
+        return item
 
-    return item
+    return None
 
 
 # ── Item history (for suggestions & details) ─────────────────────

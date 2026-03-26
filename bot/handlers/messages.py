@@ -3,6 +3,7 @@
 import logging
 
 from telegram import Update
+from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
 
 from bot.services.formatter import (
@@ -15,6 +16,8 @@ from bot.services.formatter import (
 from bot.services.list_manager import (
     add_items,
     add_items_structured,
+    add_items_structured_with_duplicates,
+    add_items_with_duplicates,
     clear_list,
     get_list_items,
     get_or_create_active_list,
@@ -31,24 +34,35 @@ logger = logging.getLogger(__name__)
 DB_ERROR_MSG = "❌ שגיאה בגישה למסד הנתונים. נסו שוב."
 
 
-async def _try_intent_understanding(text: str) -> dict | None:
+async def _send_typing(update: Update) -> None:
+    """Send typing indicator to show the bot is processing."""
+    try:
+        if update.effective_chat:
+            await update.effective_chat.send_action(ChatAction.TYPING)
+    except Exception:
+        pass  # Non-critical — don't fail if typing indicator fails
+
+
+async def _try_intent_understanding(text: str, update: Update) -> dict | None:
     """Try to understand user intent via LLM. Returns None if unavailable."""
     try:
         from bot.services.llm import is_llm_available, understand_intent
 
         if await is_llm_available():
+            await _send_typing(update)
             return await understand_intent(text)
     except Exception:
         logger.debug("Intent understanding failed", exc_info=True)
     return None
 
 
-async def _try_smart_parse(text: str) -> list[dict] | None:
+async def _try_smart_parse(text: str, update: Update) -> list[dict] | None:
     """Try to parse items via LLM. Returns None if unavailable."""
     try:
         from bot.services.llm import is_llm_available, parse_items_smart
 
         if await is_llm_available():
+            await _send_typing(update)
             return await parse_items_smart(text)
     except Exception:
         logger.debug("Smart parsing failed", exc_info=True)
@@ -83,10 +97,17 @@ async def _handle_add_action(
     update: Update,
     item_names: list[str] | None = None,
     parsed_items: list[dict] | None = None,
+    auto_sort: bool = False,
 ) -> None:
-    """Handle adding items — either from plain names or structured parsed items."""
+    """Handle adding items — either from plain names or structured parsed items.
+
+    Args:
+        auto_sort: If True and 3+ items are added, automatically show the sorted list.
+    """
     if not update.message:
         return
+
+    duplicates: list[str] = []
 
     try:
         async with db_session_with_retry() as session:
@@ -94,33 +115,57 @@ async def _handle_add_action(
             chat_id = update.effective_chat.id
 
             if parsed_items:
-                added = await add_items_structured(
+                result = await add_items_structured_with_duplicates(
                     session,
                     list_id=grocery_list.id,
                     chat_id=chat_id,
                     parsed_items=parsed_items,
                     user_id=user.id,
                 )
+                added = result.added
+                duplicates = result.duplicates
             elif item_names:
-                added = await add_items(
+                result = await add_items_with_duplicates(
                     session,
                     list_id=grocery_list.id,
                     chat_id=chat_id,
                     item_names=item_names,
                     user_id=user.id,
                 )
+                added = result.added
+                duplicates = result.duplicates
             else:
                 return
 
             added_info = [
                 _format_item_info(item) for item in added
             ]
+
+            # If auto_sort and enough items, fetch the full list for sorted display
+            sorted_text = None
+            if auto_sort and len(added) >= 3:
+                all_items = await get_list_items(session, grocery_list.id)
+                list_name = grocery_list.name
+                sorted_text = format_sorted_list(items_to_dicts(all_items), list_name)
     except Exception:
         logger.exception("Database error adding items")
         await update.message.reply_text(DB_ERROR_MSG)
         return
 
-    await update.message.reply_text(format_items_added(added_info))
+    # Build response with duplicate info
+    response = format_items_added(added_info)
+    if duplicates:
+        dup_names = ", ".join(duplicates)
+        if added_info:
+            response += f"\n\n⚠️ כבר ברשימה (דילגתי): {dup_names}"
+        else:
+            response = f"⚠️ כל הפריטים כבר ברשימה: {dup_names}"
+
+    await update.message.reply_text(response)
+
+    # Auto-show sorted list for bulk additions
+    if auto_sort and sorted_text:
+        await update.message.reply_text(sorted_text)
 
 
 def _format_item_info(item) -> dict:
@@ -276,7 +321,7 @@ async def handle_text_message(
         return
 
     # ── Step 1: Try LLM intent understanding ──────────────────────
-    intent = await _try_intent_understanding(text)
+    intent = await _try_intent_understanding(text, update)
 
     if intent and intent["action"] != "unknown":
         action = intent["action"]
@@ -285,7 +330,7 @@ async def handle_text_message(
         if action == "add" and items:
             # For add intents, try smart parsing on the original text
             # to extract quantity/unit/brand
-            parsed = await _try_smart_parse(text)
+            parsed = await _try_smart_parse(text, update)
             if parsed:
                 await _handle_add_action(update, parsed_items=parsed)
             else:
@@ -321,13 +366,9 @@ async def handle_text_message(
         return
 
     # ── Step 3: Try LLM smart parsing ────────────────────────────
-    parsed_items = await _try_smart_parse(text)
+    parsed_items = await _try_smart_parse(text, update)
     if parsed_items and len(parsed_items) >= 1:
-        await _handle_add_action(update, parsed_items=parsed_items)
-        if update.message:
-            await update.message.reply_text(
-                "\nשלחו /sort למיון לפי מחלקות 🏪",
-            )
+        await _handle_add_action(update, parsed_items=parsed_items, auto_sort=True)
         return
 
     # ── Step 4: Fall back to regex parsing ────────────────────────
@@ -335,8 +376,4 @@ async def handle_text_message(
     if not item_names or len(item_names) < 2:
         return
 
-    await _handle_add_action(update, item_names=item_names)
-    if update.message:
-        await update.message.reply_text(
-            "\n🔍 זיהיתי רשימת קניות!\nשלחו /sort למיון לפי מחלקות 🏪",
-        )
+    await _handle_add_action(update, item_names=item_names, auto_sort=True)

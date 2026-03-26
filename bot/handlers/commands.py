@@ -1,12 +1,13 @@
 """Command handlers for the Hopper Shopper bot.
 
-Handles: /start, /help, /add, /remove, /clear, /done, /undone, /list, /sort, /price, /detail
+Handles: /start, /help, /add, /remove, /clear, /cleardone, /done, /undone, /list, /sort, /price, /detail
 """
 
 import logging
 
 from sqlalchemy import select, and_
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
 
 from bot.models.grocery_item import GroceryItem
@@ -124,6 +125,12 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text("❌ לא הצלחתי לזהות פריטים בהודעה.")
         return
 
+    # Show typing indicator while classifying items (may involve LLM)
+    try:
+        await update.effective_chat.send_action(ChatAction.TYPING)
+    except Exception:
+        pass
+
     try:
         async with db_session_with_retry() as session:
             user, grocery_list = await _get_user_and_list(update, session)
@@ -181,23 +188,66 @@ async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /clear — clear the entire grocery list."""
+    """Handle /clear — ask for confirmation before clearing the entire grocery list."""
     if not update.message:
         return
 
     try:
         async with db_session_with_retry() as session:
             _, grocery_list = await _get_user_and_list(update, session)
-            count = await clear_list(session, grocery_list.id)
+            items = await get_list_items(session, grocery_list.id)
     except Exception:
         logger.exception("Database error in /clear")
         await update.message.reply_text(DB_ERROR_MSG)
         return
 
-    if count > 0:
-        await update.message.reply_text(f"🗑️ הרשימה נוקתה! ({count} פריטים הוסרו)")
-    else:
+    if not items:
         await update.message.reply_text("📝 הרשימה כבר ריקה!")
+        return
+
+    pending = sum(1 for i in items if not i.is_done)
+    done = sum(1 for i in items if i.is_done)
+
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ כן, מחק הכל", callback_data="clear:all:confirm"),
+            InlineKeyboardButton("❌ ביטול", callback_data="clear:cancel:0"),
+        ]
+    ]
+    # If there are done items, offer to clear only those
+    if done > 0 and pending > 0:
+        keyboard.insert(0, [
+            InlineKeyboardButton(
+                f"🧹 מחק רק נקנו ({done})",
+                callback_data="clear:done:confirm",
+            ),
+        ])
+
+    await update.message.reply_text(
+        f"🗑️ למחוק את הרשימה?\n\n"
+        f"📊 {len(items)} פריטים ({pending} ממתינים, {done} נקנו)",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+async def cleardone_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /cleardone — clear only purchased items from the grocery list."""
+    if not update.message:
+        return
+
+    try:
+        async with db_session_with_retry() as session:
+            _, grocery_list = await _get_user_and_list(update, session)
+            count = await clear_list(session, grocery_list.id, done_only=True)
+    except Exception:
+        logger.exception("Database error in /cleardone")
+        await update.message.reply_text(DB_ERROR_MSG)
+        return
+
+    if count > 0:
+        await update.message.reply_text(f"🧹 {count} פריטים שנקנו הוסרו מהרשימה!")
+    else:
+        await update.message.reply_text("✅ אין פריטים שנקנו להסרה.")
 
 
 # ── /done ────────────────────────────────────────────────────────
@@ -272,7 +322,10 @@ async def undone_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /list — show the current grocery list (unsorted)."""
+    """Handle /list — show the current grocery list (unsorted).
+
+    If the list is empty, shows quick-add suggestions from item history.
+    """
     if not update.message:
         return
 
@@ -281,13 +334,50 @@ async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             _, grocery_list = await _get_user_and_list(update, session)
             items = await get_list_items(session, grocery_list.id)
             list_name = grocery_list.name
+
+            # If list is empty, fetch top items from history for quick-add
+            frequent_items: list[str] = []
+            if not items and update.effective_chat:
+                history_result = await session.execute(
+                    select(ItemHistory.name)
+                    .where(ItemHistory.chat_id == update.effective_chat.id)
+                    .order_by(ItemHistory.times_added.desc())
+                    .limit(8)
+                )
+                frequent_items = [row[0] for row in history_result.fetchall()]
     except Exception:
         logger.exception("Database error in /list")
         await update.message.reply_text(DB_ERROR_MSG)
         return
 
+    if not items and frequent_items:
+        # Empty state with quick-add buttons from history
+        keyboard = []
+        # Arrange in rows of 2 buttons
+        for i in range(0, len(frequent_items), 2):
+            row = []
+            for name in frequent_items[i:i + 2]:
+                row.append(
+                    InlineKeyboardButton(
+                        f"➕ {name}",
+                        callback_data=f"qa:{name[:50]}",
+                    )
+                )
+            keyboard.append(row)
+
+        await update.message.reply_text(
+            "📝 הרשימה ריקה!\n\n"
+            "🕐 פריטים שאתם בדרך כלל קונים:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+        return
+
+    # Build action buttons for non-empty lists
+    keyboard = _build_list_action_buttons(items)
+
     await update.message.reply_text(
         format_plain_list(items_to_dicts(items), list_name),
+        reply_markup=keyboard,
     )
 
 
@@ -299,6 +389,12 @@ async def sort_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not update.message:
         return
 
+    # Show typing indicator while sorting (may involve LLM classification)
+    try:
+        await update.effective_chat.send_action(ChatAction.TYPING)
+    except Exception:
+        pass
+
     try:
         async with db_session_with_retry() as session:
             _, grocery_list = await _get_user_and_list(update, session)
@@ -309,8 +405,12 @@ async def sort_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text(DB_ERROR_MSG)
         return
 
+    # Build action buttons for non-empty lists
+    keyboard = _build_list_action_buttons(items)
+
     await update.message.reply_text(
         format_sorted_list(items_to_dicts(items), list_name),
+        reply_markup=keyboard,
     )
 
 
@@ -451,3 +551,37 @@ async def detail_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         f"פרטים: {detail}\n\n"
         f"מעכשיו כשתוסיפו '{item_name}' הפרטים יופיעו אוטומטית.",
     )
+
+
+# ── Helper: list action buttons ──────────────────────────────────
+
+
+def _build_list_action_buttons(items) -> InlineKeyboardMarkup | None:
+    """Build inline action buttons shown below list views.
+
+    Returns None if the list is empty (no buttons needed).
+    """
+    if not items:
+        return None
+
+    done_count = sum(1 for i in items if (i.is_done if hasattr(i, "is_done") else i.get("is_done", False)))
+    buttons: list[list[InlineKeyboardButton]] = []
+
+    row = [
+        InlineKeyboardButton("🛍️ מצב קניות", callback_data="lv:shop"),
+    ]
+    if done_count > 0:
+        row.append(
+            InlineKeyboardButton(
+                f"🧹 נקה נקנו ({done_count})",
+                callback_data="lv:cleardone",
+            )
+        )
+    buttons.append(row)
+
+    # Pin button (second row)
+    buttons.append([
+        InlineKeyboardButton("📌 הצמד הודעה", callback_data="lv:pin"),
+    ])
+
+    return InlineKeyboardMarkup(buttons)

@@ -81,4 +81,7 @@ echo "Running database migrations..."
 alembic upgrade head
 
 echo "Starting Hopper Shopper bot..."
+# Brief pause to let Telegram release any previous polling session
+# (the bot's own pre-startup code also force-closes stale sessions)
+sleep 2
 exec python -m bot.main

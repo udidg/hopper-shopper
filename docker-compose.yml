@@ -6,6 +6,11 @@ services:
       db:
         condition: service_healthy
     restart: unless-stopped
+    # Give the old container time to cleanly close its Telegram polling
+    # session before Docker kills it — prevents 409 Conflict on restart.
+    stop_grace_period: 15s
+    deploy:
+      replicas: 1
     healthcheck:
       test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
       interval: 30s
