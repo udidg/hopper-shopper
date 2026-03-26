@@ -2,6 +2,7 @@
 
 import logging
 
+from telegram import BotCommand
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -35,13 +36,38 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Bot commands for the Telegram menu
+BOT_COMMANDS = [
+    BotCommand("add", "הוספת פריטים לרשימה"),
+    BotCommand("remove", "הסרת פריט מהרשימה"),
+    BotCommand("list", "הצגת הרשימה"),
+    BotCommand("sort", "מיון לפי מחלקות"),
+    BotCommand("done", "סימון פריט כנקנה"),
+    BotCommand("undone", "ביטול סימון"),
+    BotCommand("clear", "ניקוי הרשימה"),
+    BotCommand("shop", "מצב קניות אינטראקטיבי"),
+    BotCommand("price", "עדכון מחיר פריט"),
+    BotCommand("help", "עזרה"),
+]
+
+
+async def post_init(application: Application) -> None:
+    """Set bot commands on startup so they appear in the Telegram menu."""
+    await application.bot.set_my_commands(BOT_COMMANDS)
+    logger.info("Bot commands registered in Telegram menu.")
+
 
 def main() -> None:
     """Start the bot."""
     logger.info("Starting Hopper Shopper bot...")
 
-    # Build the application
-    app = Application.builder().token(settings.telegram_bot_token).build()
+    # Build the application with post_init hook
+    app = (
+        Application.builder()
+        .token(settings.telegram_bot_token)
+        .post_init(post_init)
+        .build()
+    )
 
     # ── Command handlers ─────────────────────────────────────────
     app.add_handler(CommandHandler("start", start_command))
