@@ -2,10 +2,12 @@
 
 import logging
 
+from sqlalchemy import select
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
-from bot.database import async_session
+from bot.models.grocery_item import GroceryItem
 from bot.services.formatter import DEPT_EMOJI, DEFAULT_EMOJI
 from bot.services.grouping import DEPT_ORDER
 from bot.services.list_manager import (
@@ -13,33 +15,41 @@ from bot.services.list_manager import (
     get_or_create_active_list,
     get_or_create_user,
 )
+from bot.utils.db import db_session_with_retry
 
 logger = logging.getLogger(__name__)
+
+DB_ERROR_MSG = "❌ שגיאה בגישה למסד הנתונים. נסו שוב."
 
 
 async def shop_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /shop — enter interactive shopping mode with checkoff buttons."""
+    if not update.message:
+        return
+
     try:
-        async with async_session() as session:
-            async with session.begin():
-                tg_user = update.effective_user
-                chat_id = update.effective_chat.id
+        async with db_session_with_retry() as session:
+            tg_user = update.effective_user
+            chat = update.effective_chat
 
-                user = await get_or_create_user(
-                    session,
-                    telegram_id=tg_user.id,
-                    username=tg_user.username,
-                    display_name=tg_user.full_name,
-                )
+            if tg_user is None or chat is None:
+                return
 
-                grocery_list = await get_or_create_active_list(
-                    session, chat_id=chat_id, user_id=user.id
-                )
+            user = await get_or_create_user(
+                session,
+                telegram_id=tg_user.id,
+                username=tg_user.username,
+                display_name=tg_user.full_name,
+            )
 
-                items = await get_list_items(session, grocery_list.id)
+            grocery_list = await get_or_create_active_list(
+                session, chat_id=chat.id, user_id=user.id
+            )
+
+            items = await get_list_items(session, grocery_list.id)
     except Exception:
         logger.exception("Database error in /shop")
-        await update.message.reply_text("❌ שגיאה בגישה למסד הנתונים. נסו שוב.")
+        await update.message.reply_text(DB_ERROR_MSG)
         return
 
     if not items:
@@ -66,51 +76,60 @@ async def handle_shop_callback(
 ) -> None:
     """Handle callback queries from shopping mode buttons."""
     query = update.callback_query
-    await query.answer()
+    if not query:
+        return
 
     data = query.data
     if not data or not data.startswith("shop:"):
+        await query.answer()
         return
 
     parts = data.split(":")
     if len(parts) != 3:
+        await query.answer()
         return
 
     action = parts[1]
     if action == "noop":
         # Department header button — do nothing
+        await query.answer()
         return
 
     try:
         item_id = int(parts[2])
     except ValueError:
+        await query.answer()
+        return
+
+    # Validate item_id is within reasonable bounds
+    if item_id <= 0 or item_id > 2_147_483_647:
+        await query.answer()
         return
 
     try:
-        async with async_session() as session:
-            async with session.begin():
-                from sqlalchemy import select
-                from bot.models.grocery_item import GroceryItem
+        async with db_session_with_retry() as session:
+            result = await session.execute(
+                select(GroceryItem).where(GroceryItem.id == item_id)
+            )
+            item = result.scalar_one_or_none()
 
-                result = await session.execute(
-                    select(GroceryItem).where(GroceryItem.id == item_id)
-                )
-                item = result.scalar_one_or_none()
+            if item is None:
+                await query.answer("❌ פריט לא נמצא", show_alert=True)
+                return
 
-                if item is None:
-                    await query.answer("❌ פריט לא נמצא", show_alert=True)
-                    return
+            # Toggle done status
+            item.is_done = not item.is_done
+            await session.flush()
 
-                # Toggle done status
-                item.is_done = not item.is_done
-                await session.flush()
-
-                # Reload all items for this list
-                items = await get_list_items(session, item.list_id)
+            # Reload all items for this list
+            items = await get_list_items(session, item.list_id)
     except Exception:
         logger.exception("Database error in shop callback")
         await query.answer("❌ שגיאה. נסו שוב.", show_alert=True)
         return
+
+    # Answer the callback to dismiss the loading indicator
+    await query.answer()
 
     # Rebuild the keyboard
     keyboard = _build_shopping_keyboard(items)
@@ -132,9 +151,12 @@ async def handle_shop_callback(
             text=text,
             reply_markup=keyboard if pending > 0 else None,
         )
+    except BadRequest as e:
+        # "Message is not modified" — user tapped same button twice quickly
+        if "not modified" not in str(e).lower():
+            logger.warning("BadRequest editing shop message: %s", e)
     except Exception:
-        # Message might not have changed — ignore
-        pass
+        logger.exception("Error editing shop message")
 
 
 def _build_shopping_keyboard(items) -> InlineKeyboardMarkup:

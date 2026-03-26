@@ -1,6 +1,5 @@
 """Hopper Shopper Telegram Bot — entry point."""
 
-import asyncio
 import logging
 import sys
 
@@ -17,6 +16,7 @@ from telegram.ext import (
 )
 
 from bot.config import settings
+from bot.database import dispose_engine
 from bot.handlers.callbacks import handle_shop_callback, shop_command
 from bot.handlers.commands import (
     add_command,
@@ -34,13 +34,16 @@ from bot.handlers.commands import (
 from bot.handlers.inline import handle_inline_query
 from bot.handlers.messages import handle_text_message
 
-# Configure logging
+# ── Logging configuration ────────────────────────────────────────
+_log_level = getattr(logging, settings.log_level.upper(), logging.INFO)
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
+    level=_log_level,
 )
-# Reduce noise from httpx
+# Reduce noise from httpx and httpcore
 logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # Bot commands for the Telegram menu
@@ -69,6 +72,21 @@ async def post_init(application: Application) -> None:
     logger.info("Bot commands registered in Telegram menu.")
 
 
+async def post_shutdown(application: Application) -> None:
+    """Clean up resources on shutdown."""
+    logger.info("Shutting down — disposing database engine...")
+    await dispose_engine()
+
+    # Close the shared httpx client used by the LLM service
+    try:
+        from bot.services.llm import close_http_client
+        await close_http_client()
+    except Exception:
+        pass
+
+    logger.info("Shutdown complete.")
+
+
 # Track consecutive conflict errors to decide when to bail out
 _conflict_count = 0
 _MAX_CONFLICTS = 5
@@ -93,10 +111,11 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
                 "Resolve the duplicate instance and restart the container.",
                 _conflict_count,
             )
-            # Schedule a graceful shutdown
-            asyncio.get_event_loop().call_soon(
-                lambda: sys.exit(1)
-            )
+            # Graceful shutdown through the application's own mechanism
+            if context.application:
+                context.application.stop_running()
+            else:
+                sys.exit(1)
         return
 
     # Reset conflict counter on any other error (means polling is working)
@@ -120,13 +139,14 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 def main() -> None:
     """Start the bot."""
-    logger.info("Starting Hopper Shopper bot...")
+    logger.info("Starting Hopper Shopper bot (log_level=%s)...", settings.log_level)
 
-    # Build the application with post_init hook
+    # Build the application with lifecycle hooks
     app = (
         Application.builder()
         .token(settings.telegram_bot_token)
         .post_init(post_init)
+        .post_shutdown(post_shutdown)
         .build()
     )
 

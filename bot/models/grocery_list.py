@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, String, func
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, ForeignKey, Index, String, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from bot.models import Base
@@ -10,6 +10,16 @@ from bot.models import Base
 
 class GroceryList(Base):
     __tablename__ = "grocery_lists"
+
+    # Partial unique index: at most one active list per chat
+    __table_args__ = (
+        Index(
+            "uq_grocery_lists_chat_active",
+            "chat_id",
+            unique=True,
+            postgresql_where=text("is_active = true"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     chat_id: Mapped[int] = mapped_column(

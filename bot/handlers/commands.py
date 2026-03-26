@@ -1,14 +1,16 @@
 """Command handlers for the Hopper Shopper bot.
 
-Handles: /start, /help, /add, /remove, /clear, /done, /undone, /list, /sort, /price
+Handles: /start, /help, /add, /remove, /clear, /done, /undone, /list, /sort, /price, /detail
 """
 
 import logging
 
+from sqlalchemy import select, and_
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from bot.database import async_session
+from bot.models.grocery_item import GroceryItem
+from bot.models.item_history import ItemHistory
 from bot.services.formatter import (
     format_help,
     format_items_added,
@@ -29,6 +31,7 @@ from bot.services.list_manager import (
     set_item_price,
 )
 from bot.services.parser import parse_items_text
+from bot.utils.db import db_session_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +48,15 @@ def _extract_args(text: str) -> str:
 
 
 async def _get_user_and_list(update: Update, session):
-    """Helper: get or create user and active list for the current chat."""
+    """Helper: get or create user and active list for the current chat.
+
+    Returns (user, grocery_list) or raises if effective_user/chat is None.
+    """
     tg_user = update.effective_user
-    chat_id = update.effective_chat.id
+    chat = update.effective_chat
+
+    if tg_user is None or chat is None:
+        raise ValueError("Missing effective_user or effective_chat")
 
     user = await get_or_create_user(
         session,
@@ -58,7 +67,7 @@ async def _get_user_and_list(update: Update, session):
 
     grocery_list = await get_or_create_active_list(
         session,
-        chat_id=chat_id,
+        chat_id=chat.id,
         user_id=user.id,
     )
 
@@ -70,6 +79,9 @@ async def _get_user_and_list(update: Update, session):
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /start — welcome message."""
+    if not update.message:
+        return
+
     await update.message.reply_text(
         "🛒 ברוכים הבאים ל-Hopper Shopper!\n\n"
         "אני בוט לניהול רשימות קניות.\n"
@@ -83,6 +95,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /help — show available commands."""
+    if not update.message:
+        return
+
     await update.message.reply_text(format_help())
 
 
@@ -91,6 +106,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /add — add items to the grocery list."""
+    if not update.message or not update.message.text:
+        return
+
     items_text = _extract_args(update.message.text)
 
     if not items_text.strip():
@@ -107,20 +125,19 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     try:
-        async with async_session() as session:
-            async with session.begin():
-                user, grocery_list = await _get_user_and_list(update, session)
-                added = await add_items(
-                    session,
-                    list_id=grocery_list.id,
-                    chat_id=update.effective_chat.id,
-                    item_names=item_names,
-                    user_id=user.id,
-                )
-                added_info = [
-                    {"name": item.name, "detail": item.description}
-                    for item in added
-                ]
+        async with db_session_with_retry() as session:
+            user, grocery_list = await _get_user_and_list(update, session)
+            added = await add_items(
+                session,
+                list_id=grocery_list.id,
+                chat_id=update.effective_chat.id,
+                item_names=item_names,
+                user_id=user.id,
+            )
+            added_info = [
+                {"name": item.name, "detail": item.description}
+                for item in added
+            ]
     except Exception:
         logger.exception("Database error in /add")
         await update.message.reply_text(DB_ERROR_MSG)
@@ -134,6 +151,9 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /remove — remove items from the grocery list."""
+    if not update.message or not update.message.text:
+        return
+
     items_text = _extract_args(update.message.text)
 
     if not items_text.strip():
@@ -146,10 +166,9 @@ async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     item_names = parse_items_text(items_text)
 
     try:
-        async with async_session() as session:
-            async with session.begin():
-                _, grocery_list = await _get_user_and_list(update, session)
-                removed = await remove_items(session, grocery_list.id, item_names)
+        async with db_session_with_retry() as session:
+            _, grocery_list = await _get_user_and_list(update, session)
+            removed = await remove_items(session, grocery_list.id, item_names)
     except Exception:
         logger.exception("Database error in /remove")
         await update.message.reply_text(DB_ERROR_MSG)
@@ -163,11 +182,13 @@ async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /clear — clear the entire grocery list."""
+    if not update.message:
+        return
+
     try:
-        async with async_session() as session:
-            async with session.begin():
-                _, grocery_list = await _get_user_and_list(update, session)
-                count = await clear_list(session, grocery_list.id)
+        async with db_session_with_retry() as session:
+            _, grocery_list = await _get_user_and_list(update, session)
+            count = await clear_list(session, grocery_list.id)
     except Exception:
         logger.exception("Database error in /clear")
         await update.message.reply_text(DB_ERROR_MSG)
@@ -184,6 +205,9 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def done_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /done — mark an item as purchased."""
+    if not update.message or not update.message.text:
+        return
+
     item_name = _extract_args(update.message.text)
 
     if not item_name.strip():
@@ -194,11 +218,10 @@ async def done_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     try:
-        async with async_session() as session:
-            async with session.begin():
-                _, grocery_list = await _get_user_and_list(update, session)
-                item = await mark_item_done(session, grocery_list.id, item_name.strip())
-                result_name = item.name if item else None
+        async with db_session_with_retry() as session:
+            _, grocery_list = await _get_user_and_list(update, session)
+            item = await mark_item_done(session, grocery_list.id, item_name.strip())
+            result_name = item.name if item else None
     except Exception:
         logger.exception("Database error in /done")
         await update.message.reply_text(DB_ERROR_MSG)
@@ -215,6 +238,9 @@ async def done_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def undone_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /undone — unmark an item as purchased."""
+    if not update.message or not update.message.text:
+        return
+
     item_name = _extract_args(update.message.text)
 
     if not item_name.strip():
@@ -225,13 +251,12 @@ async def undone_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     try:
-        async with async_session() as session:
-            async with session.begin():
-                _, grocery_list = await _get_user_and_list(update, session)
-                item = await mark_item_done(
-                    session, grocery_list.id, item_name.strip(), done=False
-                )
-                result_name = item.name if item else None
+        async with db_session_with_retry() as session:
+            _, grocery_list = await _get_user_and_list(update, session)
+            item = await mark_item_done(
+                session, grocery_list.id, item_name.strip(), done=False
+            )
+            result_name = item.name if item else None
     except Exception:
         logger.exception("Database error in /undone")
         await update.message.reply_text(DB_ERROR_MSG)
@@ -248,12 +273,14 @@ async def undone_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /list — show the current grocery list (unsorted)."""
+    if not update.message:
+        return
+
     try:
-        async with async_session() as session:
-            async with session.begin():
-                _, grocery_list = await _get_user_and_list(update, session)
-                items = await get_list_items(session, grocery_list.id)
-                list_name = grocery_list.name
+        async with db_session_with_retry() as session:
+            _, grocery_list = await _get_user_and_list(update, session)
+            items = await get_list_items(session, grocery_list.id)
+            list_name = grocery_list.name
     except Exception:
         logger.exception("Database error in /list")
         await update.message.reply_text(DB_ERROR_MSG)
@@ -269,12 +296,14 @@ async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def sort_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /sort — show the grocery list sorted by department."""
+    if not update.message:
+        return
+
     try:
-        async with async_session() as session:
-            async with session.begin():
-                _, grocery_list = await _get_user_and_list(update, session)
-                items = await get_list_items(session, grocery_list.id)
-                list_name = grocery_list.name
+        async with db_session_with_retry() as session:
+            _, grocery_list = await _get_user_and_list(update, session)
+            items = await get_list_items(session, grocery_list.id)
+            list_name = grocery_list.name
     except Exception:
         logger.exception("Database error in /sort")
         await update.message.reply_text(DB_ERROR_MSG)
@@ -290,6 +319,9 @@ async def sort_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /price — set price for an item. Usage: /price חלב 7.90"""
+    if not update.message or not update.message.text:
+        return
+
     text = update.message.text
     parts = text.split(maxsplit=2)
 
@@ -308,11 +340,10 @@ async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     try:
-        async with async_session() as session:
-            async with session.begin():
-                _, grocery_list = await _get_user_and_list(update, session)
-                item = await set_item_price(session, grocery_list.id, item_name, price)
-                result_name = item.name if item else None
+        async with db_session_with_retry() as session:
+            _, grocery_list = await _get_user_and_list(update, session)
+            item = await set_item_price(session, grocery_list.id, item_name, price)
+            result_name = item.name if item else None
     except Exception:
         logger.exception("Database error in /price")
         await update.message.reply_text(DB_ERROR_MSG)
@@ -334,6 +365,9 @@ async def detail_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     This saves "של דוד משה" as the default detail for "תפוחי אדמה".
     Next time you add "תפוחי אדמה", the detail will be auto-applied.
     """
+    if not update.message or not update.message.text:
+        return
+
     args = _extract_args(update.message.text)
 
     if not args.strip():
@@ -351,68 +385,61 @@ async def detail_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # Try to find the item name by checking history
     try:
-        async with async_session() as session:
-            async with session.begin():
-                chat_id = update.effective_chat.id
+        async with db_session_with_retry() as session:
+            chat_id = update.effective_chat.id
 
-                # Strategy: try progressively shorter prefixes as item name
-                words = parts.split()
-                item_name = None
-                detail = None
+            # Strategy: try progressively shorter prefixes as item name
+            words = parts.split()
+            item_name = None
+            detail = None
 
-                for i in range(len(words) - 1, 0, -1):
-                    candidate_name = " ".join(words[:i])
-                    candidate_detail = " ".join(words[i:])
+            for i in range(len(words) - 1, 0, -1):
+                candidate_name = " ".join(words[:i])
+                candidate_detail = " ".join(words[i:])
 
-                    # Check if this candidate exists in history or in the active list
-                    from bot.services.list_manager import get_or_create_active_list
-                    from bot.models.grocery_item import GroceryItem
-                    from bot.models.item_history import ItemHistory
-                    from sqlalchemy import select, and_
+                active_list = await get_or_create_active_list(session, chat_id)
 
-                    active_list = await get_or_create_active_list(session, chat_id)
-
-                    # Check active list
-                    result = await session.execute(
-                        select(GroceryItem).where(
-                            and_(
-                                GroceryItem.list_id == active_list.id,
-                                GroceryItem.name.ilike(candidate_name),
-                            )
+                # Check active list
+                result = await session.execute(
+                    select(GroceryItem).where(
+                        and_(
+                            GroceryItem.list_id == active_list.id,
+                            GroceryItem.name.ilike(candidate_name),
                         )
                     )
-                    if result.scalar_one_or_none():
-                        item_name = candidate_name
-                        detail = candidate_detail
-                        break
+                )
+                if result.scalar_one_or_none():
+                    item_name = candidate_name
+                    detail = candidate_detail
+                    break
 
-                    # Check history
-                    result = await session.execute(
-                        select(ItemHistory).where(
-                            and_(
-                                ItemHistory.chat_id == chat_id,
-                                ItemHistory.name.ilike(candidate_name),
-                            )
+                # Check history
+                result = await session.execute(
+                    select(ItemHistory).where(
+                        and_(
+                            ItemHistory.chat_id == chat_id,
+                            ItemHistory.name.ilike(candidate_name),
                         )
                     )
-                    if result.scalar_one_or_none():
-                        item_name = candidate_name
-                        detail = candidate_detail
-                        break
+                )
+                if result.scalar_one_or_none():
+                    item_name = candidate_name
+                    detail = candidate_detail
+                    break
 
-                # Fallback: first word = item, rest = detail
-                if item_name is None:
-                    item_name = words[0]
-                    detail = " ".join(words[1:]) if len(words) > 1 else None
+            # Fallback: first word = item, rest = detail
+            if item_name is None:
+                item_name = words[0]
+                detail = " ".join(words[1:]) if len(words) > 1 else None
 
-                if not detail:
-                    await update.message.reply_text(
-                        "❌ נא לציין גם פריט וגם פרטים.\n"
-                        "דוגמה: /detail תפוחי אדמה של דוד משה",
-                    )
-                    return
+            if not detail:
+                await update.message.reply_text(
+                    "❌ נא לציין גם פריט וגם פרטים.\n"
+                    "דוגמה: /detail תפוחי אדמה של דוד משה",
+                )
+                return
 
-                await set_item_detail(session, chat_id, item_name, detail)
+            await set_item_detail(session, chat_id, item_name, detail)
     except Exception:
         logger.exception("Database error in /detail")
         await update.message.reply_text(DB_ERROR_MSG)

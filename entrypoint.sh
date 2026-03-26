@@ -5,9 +5,41 @@ export PYTHONPATH=/app:$PYTHONPATH
 
 echo "=== Hopper Shopper Bot ==="
 
-# Clear old alembic version tracking if it exists (from the old Mini App backend).
+# ── Wait for database to be ready ────────────────────────────────
+MAX_RETRIES=30
+RETRY_INTERVAL=2
+
+echo "Waiting for database to be ready..."
+for i in $(seq 1 $MAX_RETRIES); do
+    if python -c "
+import asyncio
+from sqlalchemy.ext.asyncio import create_async_engine
+from bot.config import settings
+
+async def check():
+    engine = create_async_engine(settings.database_url)
+    async with engine.connect() as conn:
+        await conn.execute(__import__('sqlalchemy').text('SELECT 1'))
+    await engine.dispose()
+
+asyncio.run(check())
+" 2>/dev/null; then
+        echo "  Database is ready!"
+        break
+    fi
+
+    if [ "$i" -eq "$MAX_RETRIES" ]; then
+        echo "  ERROR: Database not ready after $MAX_RETRIES attempts. Exiting."
+        exit 1
+    fi
+
+    echo "  Attempt $i/$MAX_RETRIES — database not ready, retrying in ${RETRY_INTERVAL}s..."
+    sleep $RETRY_INTERVAL
+done
+
+# ── Clear old alembic version tracking if needed ─────────────────
 # Only reset if the revision is NOT part of our bot migration chain.
-BOT_REVISIONS="001_initial_bot 002_add_detail 003_add_qty_brand"
+BOT_REVISIONS="001_initial_bot 002_add_detail 003_add_qty_brand 004_unique_constraints"
 
 echo "Checking for old migration state..."
 python -c "
@@ -43,7 +75,7 @@ try:
     asyncio.run(reset_alembic())
 except Exception as e:
     print(f'  No alembic_version table yet (fresh DB): {e}')
-" 2>/dev/null || echo "  Fresh database — no migration state to clear."
+" || echo "  Fresh database — no migration state to clear."
 
 echo "Running database migrations..."
 alembic upgrade head

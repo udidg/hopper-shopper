@@ -5,8 +5,13 @@ import logging
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from bot.database import async_session
-from bot.services.formatter import format_items_added, format_items_removed
+from bot.services.formatter import (
+    format_help,
+    format_items_added,
+    format_items_removed,
+    format_plain_list,
+    format_sorted_list,
+)
 from bot.services.list_manager import (
     add_items,
     add_items_structured,
@@ -19,8 +24,11 @@ from bot.services.list_manager import (
     remove_items,
 )
 from bot.services.parser import looks_like_grocery_list, parse_items_text
+from bot.utils.db import db_session_with_retry
 
 logger = logging.getLogger(__name__)
+
+DB_ERROR_MSG = "❌ שגיאה בגישה למסד הנתונים. נסו שוב."
 
 
 async def _try_intent_understanding(text: str) -> dict | None:
@@ -47,55 +55,69 @@ async def _try_smart_parse(text: str) -> list[dict] | None:
     return None
 
 
+async def _get_user_and_list(update: Update, session):
+    """Helper: get or create user and active list for the current chat."""
+    tg_user = update.effective_user
+    chat = update.effective_chat
+
+    if tg_user is None or chat is None:
+        raise ValueError("Missing effective_user or effective_chat")
+
+    user = await get_or_create_user(
+        session,
+        telegram_id=tg_user.id,
+        username=tg_user.username,
+        display_name=tg_user.full_name,
+    )
+
+    grocery_list = await get_or_create_active_list(
+        session,
+        chat_id=chat.id,
+        user_id=user.id,
+    )
+
+    return user, grocery_list
+
+
 async def _handle_add_action(
     update: Update,
     item_names: list[str] | None = None,
     parsed_items: list[dict] | None = None,
 ) -> None:
     """Handle adding items — either from plain names or structured parsed items."""
+    if not update.message:
+        return
+
     try:
-        async with async_session() as session:
-            async with session.begin():
-                tg_user = update.effective_user
-                chat_id = update.effective_chat.id
+        async with db_session_with_retry() as session:
+            user, grocery_list = await _get_user_and_list(update, session)
+            chat_id = update.effective_chat.id
 
-                user = await get_or_create_user(
+            if parsed_items:
+                added = await add_items_structured(
                     session,
-                    telegram_id=tg_user.id,
-                    username=tg_user.username,
-                    display_name=tg_user.full_name,
-                )
-
-                grocery_list = await get_or_create_active_list(
-                    session,
+                    list_id=grocery_list.id,
                     chat_id=chat_id,
+                    parsed_items=parsed_items,
                     user_id=user.id,
                 )
+            elif item_names:
+                added = await add_items(
+                    session,
+                    list_id=grocery_list.id,
+                    chat_id=chat_id,
+                    item_names=item_names,
+                    user_id=user.id,
+                )
+            else:
+                return
 
-                if parsed_items:
-                    added = await add_items_structured(
-                        session,
-                        list_id=grocery_list.id,
-                        chat_id=chat_id,
-                        parsed_items=parsed_items,
-                        user_id=user.id,
-                    )
-                elif item_names:
-                    added = await add_items(
-                        session,
-                        list_id=grocery_list.id,
-                        chat_id=chat_id,
-                        item_names=item_names,
-                        user_id=user.id,
-                    )
-                else:
-                    return
-
-                added_info = [
-                    _format_item_info(item) for item in added
-                ]
+            added_info = [
+                _format_item_info(item) for item in added
+            ]
     except Exception:
         logger.exception("Database error adding items")
+        await update.message.reply_text(DB_ERROR_MSG)
         return
 
     await update.message.reply_text(format_items_added(added_info))
@@ -122,29 +144,16 @@ def _format_item_info(item) -> dict:
 
 async def _handle_remove_action(update: Update, item_names: list[str]) -> None:
     """Handle removing items by name."""
-    if not item_names:
+    if not item_names or not update.message:
         return
 
     try:
-        async with async_session() as session:
-            async with session.begin():
-                tg_user = update.effective_user
-                chat_id = update.effective_chat.id
-
-                user = await get_or_create_user(
-                    session,
-                    telegram_id=tg_user.id,
-                    username=tg_user.username,
-                    display_name=tg_user.full_name,
-                )
-
-                grocery_list = await get_or_create_active_list(
-                    session, chat_id=chat_id, user_id=user.id
-                )
-
-                removed = await remove_items(session, grocery_list.id, item_names)
+        async with db_session_with_retry() as session:
+            _, grocery_list = await _get_user_and_list(update, session)
+            removed = await remove_items(session, grocery_list.id, item_names)
     except Exception:
         logger.exception("Database error removing items")
+        await update.message.reply_text(DB_ERROR_MSG)
         return
 
     await update.message.reply_text(format_items_removed(removed))
@@ -152,35 +161,23 @@ async def _handle_remove_action(update: Update, item_names: list[str]) -> None:
 
 async def _handle_done_action(update: Update, item_names: list[str]) -> None:
     """Handle marking items as done."""
-    if not item_names:
+    if not item_names or not update.message:
         return
 
     try:
-        async with async_session() as session:
-            async with session.begin():
-                tg_user = update.effective_user
-                chat_id = update.effective_chat.id
+        async with db_session_with_retry() as session:
+            _, grocery_list = await _get_user_and_list(update, session)
 
-                user = await get_or_create_user(
-                    session,
-                    telegram_id=tg_user.id,
-                    username=tg_user.username,
-                    display_name=tg_user.full_name,
+            done_names = []
+            for name in item_names:
+                item = await mark_item_done(
+                    session, grocery_list.id, name.strip()
                 )
-
-                grocery_list = await get_or_create_active_list(
-                    session, chat_id=chat_id, user_id=user.id
-                )
-
-                done_names = []
-                for name in item_names:
-                    item = await mark_item_done(
-                        session, grocery_list.id, name.strip()
-                    )
-                    if item:
-                        done_names.append(item.name)
+                if item:
+                    done_names.append(item.name)
     except Exception:
         logger.exception("Database error marking items done")
+        await update.message.reply_text(DB_ERROR_MSG)
         return
 
     if done_names:
@@ -192,29 +189,17 @@ async def _handle_done_action(update: Update, item_names: list[str]) -> None:
 
 async def _handle_list_action(update: Update) -> None:
     """Handle showing the list."""
-    from bot.services.formatter import format_plain_list
+    if not update.message:
+        return
 
     try:
-        async with async_session() as session:
-            async with session.begin():
-                tg_user = update.effective_user
-                chat_id = update.effective_chat.id
-
-                user = await get_or_create_user(
-                    session,
-                    telegram_id=tg_user.id,
-                    username=tg_user.username,
-                    display_name=tg_user.full_name,
-                )
-
-                grocery_list = await get_or_create_active_list(
-                    session, chat_id=chat_id, user_id=user.id
-                )
-
-                items = await get_list_items(session, grocery_list.id)
-                list_name = grocery_list.name
+        async with db_session_with_retry() as session:
+            _, grocery_list = await _get_user_and_list(update, session)
+            items = await get_list_items(session, grocery_list.id)
+            list_name = grocery_list.name
     except Exception:
         logger.exception("Database error listing items")
+        await update.message.reply_text(DB_ERROR_MSG)
         return
 
     await update.message.reply_text(
@@ -224,29 +209,17 @@ async def _handle_list_action(update: Update) -> None:
 
 async def _handle_sort_action(update: Update) -> None:
     """Handle showing the sorted list."""
-    from bot.services.formatter import format_sorted_list
+    if not update.message:
+        return
 
     try:
-        async with async_session() as session:
-            async with session.begin():
-                tg_user = update.effective_user
-                chat_id = update.effective_chat.id
-
-                user = await get_or_create_user(
-                    session,
-                    telegram_id=tg_user.id,
-                    username=tg_user.username,
-                    display_name=tg_user.full_name,
-                )
-
-                grocery_list = await get_or_create_active_list(
-                    session, chat_id=chat_id, user_id=user.id
-                )
-
-                items = await get_list_items(session, grocery_list.id)
-                list_name = grocery_list.name
+        async with db_session_with_retry() as session:
+            _, grocery_list = await _get_user_and_list(update, session)
+            items = await get_list_items(session, grocery_list.id)
+            list_name = grocery_list.name
     except Exception:
         logger.exception("Database error sorting items")
+        await update.message.reply_text(DB_ERROR_MSG)
         return
 
     await update.message.reply_text(
@@ -256,26 +229,16 @@ async def _handle_sort_action(update: Update) -> None:
 
 async def _handle_clear_action(update: Update) -> None:
     """Handle clearing the list."""
+    if not update.message:
+        return
+
     try:
-        async with async_session() as session:
-            async with session.begin():
-                tg_user = update.effective_user
-                chat_id = update.effective_chat.id
-
-                user = await get_or_create_user(
-                    session,
-                    telegram_id=tg_user.id,
-                    username=tg_user.username,
-                    display_name=tg_user.full_name,
-                )
-
-                grocery_list = await get_or_create_active_list(
-                    session, chat_id=chat_id, user_id=user.id
-                )
-
-                count = await clear_list(session, grocery_list.id)
+        async with db_session_with_retry() as session:
+            _, grocery_list = await _get_user_and_list(update, session)
+            count = await clear_list(session, grocery_list.id)
     except Exception:
         logger.exception("Database error clearing list")
+        await update.message.reply_text(DB_ERROR_MSG)
         return
 
     if count > 0:
@@ -286,7 +249,8 @@ async def _handle_clear_action(update: Update) -> None:
 
 async def _handle_help_action(update: Update) -> None:
     """Handle help request."""
-    from bot.services.formatter import format_help
+    if not update.message:
+        return
 
     await update.message.reply_text(format_help())
 
@@ -360,9 +324,10 @@ async def handle_text_message(
     parsed_items = await _try_smart_parse(text)
     if parsed_items and len(parsed_items) >= 1:
         await _handle_add_action(update, parsed_items=parsed_items)
-        await update.message.reply_text(
-            "\nשלחו /sort למיון לפי מחלקות 🏪",
-        )
+        if update.message:
+            await update.message.reply_text(
+                "\nשלחו /sort למיון לפי מחלקות 🏪",
+            )
         return
 
     # ── Step 4: Fall back to regex parsing ────────────────────────
@@ -371,6 +336,7 @@ async def handle_text_message(
         return
 
     await _handle_add_action(update, item_names=item_names)
-    await update.message.reply_text(
-        "\n🔍 זיהיתי רשימת קניות!\nשלחו /sort למיון לפי מחלקות 🏪",
-    )
+    if update.message:
+        await update.message.reply_text(
+            "\n🔍 זיהיתי רשימת קניות!\nשלחו /sort למיון לפי מחלקות 🏪",
+        )

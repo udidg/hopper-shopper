@@ -8,9 +8,12 @@ Send items, sort them by store department, and shop interactively — all in Heb
 - **🏪 Department Sorting** — `/sort` classifies items by store department with emojis
 - **📝 Item Management** — Add, remove, and mark items as done
 - **🔍 Auto-Detection** — Bot detects multi-line grocery lists sent as free text
-- **🧠 Smart Classification** — Keyword-based + optional LLM (Ollama) fallback
+- **🧠 Smart Classification** — Keyword-based + LLM fallback (Gemini primary, Ollama local)
+- **🗣️ Natural Language** — Understands Hebrew commands like "תוסיף חלב ולחם" or "קניתי ביצים"
 - **🛍️ Shopping Mode** — Interactive inline buttons to check off items while shopping
 - **💰 Price Tracking** — Track last observed prices for items
+- **📋 Item Details** — Save default brand/details per item (auto-applied on future adds)
+- **🔎 Inline Suggestions** — Type `@bot_name` to get item suggestions from your history
 - **🇮🇱 Hebrew-First** — All UI text and department names are in Hebrew
 
 ## Bot Commands
@@ -25,6 +28,7 @@ Send items, sort them by store department, and shop interactively — all in Heb
 | `/undone פריט` | ביטול סימון פריט |
 | `/clear` | ניקוי כל הרשימה |
 | `/shop` | מצב קניות עם כפתורים אינטראקטיביים |
+| `/detail פריט פרטים` | שמירת מותג/פרטים לפריט |
 | `/price פריט מחיר` | עדכון מחיר פריט |
 | `/help` | עזרה |
 
@@ -83,8 +87,9 @@ The bot auto-detects it as a grocery list. Then send `/sort`:
 ## Tech Stack
 
 - **Bot Framework:** [python-telegram-bot](https://python-telegram-bot.org/) v21+ (async)
-- **Database:** PostgreSQL + async SQLAlchemy 2.x + Alembic
-- **LLM (optional):** [Ollama](https://ollama.ai/) for smart department classification
+- **Database:** PostgreSQL 16 + async SQLAlchemy 2.x + Alembic
+- **LLM (optional):** [Gemini API](https://aistudio.google.com/apikey) (primary) + [Ollama](https://ollama.ai/) (local fallback)
+- **HTTP Client:** httpx (async, connection pooling)
 - **Containerization:** Docker + Docker Compose
 
 ## Project Structure
@@ -92,31 +97,59 @@ The bot auto-detects it as a grocery list. Then send `/sort`:
 ```
 hopper-shopper/
 ├── bot/
-│   ├── main.py              # Entry point
-│   ├── config.py             # Settings from env vars
-│   ├── database.py           # Async SQLAlchemy session
+│   ├── main.py              # Entry point, lifecycle hooks
+│   ├── config.py             # Settings from env vars (pydantic-settings)
+│   ├── database.py           # Async SQLAlchemy engine & session
 │   ├── handlers/
-│   │   ├── commands.py       # /add, /sort, /list, etc.
-│   │   ├── messages.py       # Free-text auto-detection
+│   │   ├── commands.py       # /add, /sort, /list, /detail, etc.
+│   │   ├── messages.py       # Free-text auto-detection + NLU
 │   │   ├── callbacks.py      # Shopping mode buttons
 │   │   └── inline.py         # Inline query suggestions
 │   ├── services/
-│   │   ├── grouping.py       # Department classification
-│   │   ├── llm.py            # Ollama integration
+│   │   ├── grouping.py       # Department classification (keyword maps)
+│   │   ├── llm.py            # Gemini + Ollama LLM integration
 │   │   ├── formatter.py      # Hebrew message formatting
 │   │   ├── parser.py         # Text → item list parsing
 │   │   └── list_manager.py   # DB CRUD operations
-│   └── models/
-│       ├── user.py
-│       ├── grocery_list.py
-│       ├── grocery_item.py
-│       └── item_history.py
+│   ├── models/
+│   │   ├── user.py
+│   │   ├── grocery_list.py
+│   │   ├── grocery_item.py
+│   │   └── item_history.py
+│   └── utils/
+│       └── db.py             # DB session helper with retry logic
 ├── alembic/                  # DB migrations
 ├── docker-compose.yml
 ├── Dockerfile
+├── entrypoint.sh
 ├── requirements.txt
 └── .env.example
 ```
+
+## Architecture & Resilience
+
+The bot is designed for production reliability:
+
+- **Database:** Connection pooling with `pool_pre_ping` (stale connection detection), automatic retry on transient errors, bulk operations
+- **LLM:** Circuit breaker pattern (skips failing backends for 60s cooldown), shared HTTP client with connection pooling, bounded LRU cache (2000 entries), global rate limiting
+- **Handlers:** Null-safe guards on all Telegram update fields, user-facing error messages on all failures, input validation
+- **Data Integrity:** Unique constraints prevent duplicate lists and history entries, Unicode-normalized item names, LIKE-pattern escaping
+- **Infrastructure:** Health checks on all containers, resource limits, graceful shutdown with proper cleanup, DB readiness wait loop on startup
+
+## Environment Variables
+
+See [`.env.example`](.env.example) for all available settings:
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `TELEGRAM_BOT_TOKEN` | ✅ | Bot token from [@BotFather](https://t.me/BotFather) |
+| `DATABASE_URL` | ✅ | PostgreSQL connection string |
+| `GEMINI_API_KEY` | ❌ | Google AI Studio API key (free tier available) |
+| `GEMINI_MODEL` | ❌ | Gemini model name (default: `gemini-2.0-flash`) |
+| `OLLAMA_URL` | ❌ | Ollama server URL (default: empty) |
+| `OLLAMA_MODEL` | ❌ | Ollama model name (default: `gemma3:1b`) |
+| `LLM_RATE_LIMIT` | ❌ | Max LLM requests/minute (default: `20`) |
+| `LOG_LEVEL` | ❌ | Logging level (default: `INFO`) |
 
 ## Deployment
 

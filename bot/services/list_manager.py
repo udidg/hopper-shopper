@@ -1,8 +1,9 @@
 """CRUD operations for grocery lists and items."""
 
 import logging
+import unicodedata
 
-from sqlalchemy import select, and_, func
+from sqlalchemy import select, and_, delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.models.grocery_list import GroceryList
@@ -12,6 +13,20 @@ from bot.models.user import User
 from bot.services.grouping import guess_categories_batch, guess_category_smart
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_name(name: str) -> str:
+    """Normalize an item name for consistent storage and matching.
+
+    - Strips leading/trailing whitespace
+    - Normalizes Unicode (NFC form — canonical composition)
+    - Collapses multiple spaces into one
+    """
+    name = name.strip()
+    name = unicodedata.normalize("NFC", name)
+    # Collapse multiple whitespace into single space
+    name = " ".join(name.split())
+    return name
 
 
 # ── User management ──────────────────────────────────────────────
@@ -57,14 +72,20 @@ async def get_or_create_active_list(
     user_id: int | None = None,
     list_name: str = "רשימת קניות",
 ) -> GroceryList:
-    """Get the active grocery list for a chat, or create one."""
+    """Get the active grocery list for a chat, or create one.
+
+    Uses .first() instead of .scalar_one_or_none() to gracefully handle
+    the rare case of duplicate active lists (race condition) until the
+    unique constraint migration is applied.
+    """
     result = await session.execute(
         select(GroceryList).where(
             and_(
                 GroceryList.chat_id == chat_id,
                 GroceryList.is_active == True,  # noqa: E712
             )
-        )
+        ).order_by(GroceryList.created_at.asc())
+        .limit(1)
     )
     grocery_list = result.scalar_one_or_none()
 
@@ -130,8 +151,14 @@ async def add_items(
     Uses batch classification for efficiency (one LLM call for all items).
     Auto-applies saved details/brand from item history.
     Updates item history for future suggestions.
+    Normalizes item names for consistent storage.
     """
     added: list[GroceryItem] = []
+
+    # Normalize all names
+    item_names = [_normalize_name(n) for n in item_names if _normalize_name(n)]
+    if not item_names:
+        return added
 
     # Get current max sort_order
     result = await session.execute(
@@ -180,8 +207,17 @@ async def add_items_structured(
 
     Each item in parsed_items should have keys: name, quantity, unit, brand.
     Uses batch classification for efficiency.
+    Normalizes item names for consistent storage.
     """
     added: list[GroceryItem] = []
+
+    if not parsed_items:
+        return added
+
+    # Normalize names
+    for p in parsed_items:
+        p["name"] = _normalize_name(p.get("name", ""))
+    parsed_items = [p for p in parsed_items if p["name"]]
 
     if not parsed_items:
         return added
@@ -237,22 +273,28 @@ async def remove_items(
     list_id: int,
     item_names: list[str],
 ) -> list[str]:
-    """Remove items from a grocery list by name. Returns names of removed items."""
+    """Remove items from a grocery list by name.
+
+    Returns names of removed items. Removes ALL matches for each name
+    (handles duplicates correctly).
+    """
     removed: list[str] = []
 
     for name in item_names:
+        normalized = _normalize_name(name)
         result = await session.execute(
             select(GroceryItem).where(
                 and_(
                     GroceryItem.list_id == list_id,
-                    GroceryItem.name.ilike(name.strip()),
+                    GroceryItem.name.ilike(normalized),
                 )
             )
         )
-        item = result.scalar_one_or_none()
-        if item:
-            removed.append(item.name)
-            await session.delete(item)
+        items = result.scalars().all()
+        if items:
+            removed.append(items[0].name)  # Use the actual stored name
+            for item in items:
+                await session.delete(item)
 
     await session.flush()
     return removed
@@ -265,11 +307,12 @@ async def mark_item_done(
     done: bool = True,
 ) -> GroceryItem | None:
     """Mark an item as done/undone. Returns the item or None if not found."""
+    normalized = _normalize_name(item_name)
     result = await session.execute(
         select(GroceryItem).where(
             and_(
                 GroceryItem.list_id == list_id,
-                GroceryItem.name.ilike(item_name.strip()),
+                GroceryItem.name.ilike(normalized),
             )
         )
     )
@@ -306,7 +349,7 @@ async def clear_list(
     done_only: bool = False,
 ) -> int:
     """
-    Clear items from a grocery list.
+    Clear items from a grocery list using a bulk DELETE.
 
     Args:
         done_only: If True, only clear done items. If False, clear all.
@@ -314,19 +357,13 @@ async def clear_list(
     Returns:
         Number of items removed.
     """
-    query = select(GroceryItem).where(GroceryItem.list_id == list_id)
+    stmt = delete(GroceryItem).where(GroceryItem.list_id == list_id)
     if done_only:
-        query = query.where(GroceryItem.is_done == True)  # noqa: E712
+        stmt = stmt.where(GroceryItem.is_done == True)  # noqa: E712
 
-    result = await session.execute(query)
-    items = result.scalars().all()
-    count = len(items)
-
-    for item in items:
-        await session.delete(item)
-
+    result = await session.execute(stmt)
     await session.flush()
-    return count
+    return result.rowcount
 
 
 async def set_item_price(
@@ -336,11 +373,12 @@ async def set_item_price(
     price: float,
 ) -> GroceryItem | None:
     """Set the price for an item. Returns the item or None if not found."""
+    normalized = _normalize_name(item_name)
     result = await session.execute(
         select(GroceryItem).where(
             and_(
                 GroceryItem.list_id == list_id,
-                GroceryItem.name.ilike(item_name.strip()),
+                GroceryItem.name.ilike(normalized),
             )
         )
     )
@@ -362,11 +400,12 @@ async def _get_saved_detail(
     name: str,
 ) -> str | None:
     """Look up saved detail/brand for an item from history."""
+    normalized = _normalize_name(name)
     result = await session.execute(
         select(ItemHistory.default_detail).where(
             and_(
                 ItemHistory.chat_id == chat_id,
-                ItemHistory.name.ilike(name.strip()),
+                ItemHistory.name.ilike(normalized),
                 ItemHistory.default_detail.isnot(None),
             )
         )
@@ -386,12 +425,14 @@ async def set_item_detail(
     Also updates the description on any existing items in the active list.
     Returns True if the history entry was found/created.
     """
+    normalized = _normalize_name(item_name)
+
     # Upsert the history entry
     result = await session.execute(
         select(ItemHistory).where(
             and_(
                 ItemHistory.chat_id == chat_id,
-                ItemHistory.name.ilike(item_name.strip()),
+                ItemHistory.name.ilike(normalized),
             )
         )
     )
@@ -401,7 +442,7 @@ async def set_item_detail(
         # Create a new history entry with the detail
         entry = ItemHistory(
             chat_id=chat_id,
-            name=item_name.strip(),
+            name=normalized,
             default_detail=detail,
             times_added=0,
         )
@@ -415,7 +456,7 @@ async def set_item_detail(
         select(GroceryItem).where(
             and_(
                 GroceryItem.list_id == active_list.id,
-                GroceryItem.name.ilike(item_name.strip()),
+                GroceryItem.name.ilike(normalized),
             )
         )
     )
@@ -432,21 +473,26 @@ async def _upsert_item_history(
     name: str,
     category: str | None,
 ) -> None:
-    """Create or update an item history entry."""
+    """Create or update an item history entry.
+
+    Handles the case where duplicate entries exist (before unique constraint
+    migration) by updating the first match.
+    """
+    normalized = _normalize_name(name)
     result = await session.execute(
         select(ItemHistory).where(
             and_(
                 ItemHistory.chat_id == chat_id,
-                ItemHistory.name.ilike(name.strip()),
+                ItemHistory.name.ilike(normalized),
             )
-        )
+        ).limit(1)
     )
     entry = result.scalar_one_or_none()
 
     if entry is None:
         entry = ItemHistory(
             chat_id=chat_id,
-            name=name,
+            name=normalized,
             default_category=category,
             times_added=1,
         )

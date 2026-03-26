@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     ollama_url: str = ""  # e.g. "http://ollama:11434"
     ollama_model: str = "gemma3:1b"
 
+    # Logging
+    log_level: str = "INFO"
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

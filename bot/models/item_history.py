@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Integer, Numeric, String, func
+from sqlalchemy import BigInteger, Column, DateTime, Index, Integer, Numeric, String, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from bot.models import Base
@@ -10,6 +10,16 @@ from bot.models import Base
 
 class ItemHistory(Base):
     __tablename__ = "item_history"
+
+    # Unique constraint: one history entry per (chat_id, name) pair
+    __table_args__ = (
+        Index(
+            "uq_item_history_chat_name",
+            "chat_id",
+            text("lower(name)"),
+            unique=True,
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     chat_id: Mapped[int] = mapped_column(

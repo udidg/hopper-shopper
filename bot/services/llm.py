@@ -5,8 +5,9 @@ Provides:
 - Smart item parsing (extract quantity, unit, brand)
 - Natural language intent understanding
 - JSON extraction utilities
-- In-memory result caching
+- In-memory result caching (bounded LRU)
 - Global rate limiting (configurable, default 20 req/min)
+- Circuit breaker for backend resilience
 
 Backend priority:
 1. Gemini API (cloud, stronger model) — if GEMINI_API_KEY is set
@@ -19,7 +20,7 @@ import json
 import logging
 import re
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from typing import Optional
 
 import httpx
@@ -40,6 +41,38 @@ _OLLAMA_TIMEOUT = 15.0
 _OLLAMA_BATCH_TIMEOUT = 30.0
 _GEMINI_TIMEOUT = 15.0
 _GEMINI_BATCH_TIMEOUT = 30.0
+
+# ── Shared HTTP client (connection pooling) ──────────────────────
+
+_http_client: httpx.AsyncClient | None = None
+_http_client_lock = asyncio.Lock()
+
+
+async def _get_http_client() -> httpx.AsyncClient:
+    """Get or create the shared httpx client with connection pooling."""
+    global _http_client
+    if _http_client is None or _http_client.is_closed:
+        async with _http_client_lock:
+            # Double-check after acquiring lock
+            if _http_client is None or _http_client.is_closed:
+                _http_client = httpx.AsyncClient(
+                    timeout=httpx.Timeout(30.0, connect=10.0),
+                    limits=httpx.Limits(
+                        max_connections=20,
+                        max_keepalive_connections=5,
+                    ),
+                )
+    return _http_client
+
+
+async def close_http_client() -> None:
+    """Close the shared HTTP client. Call on application shutdown."""
+    global _http_client
+    if _http_client is not None and not _http_client.is_closed:
+        await _http_client.aclose()
+        _http_client = None
+        logger.info("Shared HTTP client closed.")
+
 
 # ── Global rate limiter (sliding window) ─────────────────────────
 
@@ -73,16 +106,108 @@ async def _acquire_rate_limit() -> bool:
         return True
 
 
+# ── Circuit breaker ──────────────────────────────────────────────
+
+_CIRCUIT_FAILURE_THRESHOLD = 3   # Open circuit after N consecutive failures
+_CIRCUIT_COOLDOWN = 60.0         # Seconds to wait before retrying
+
+
+class _CircuitBreaker:
+    """Simple circuit breaker for LLM backends.
+
+    States:
+    - CLOSED: normal operation, requests pass through
+    - OPEN: backend is down, skip requests for cooldown period
+    """
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self._failure_count = 0
+        self._last_failure_time: float = 0
+        self._is_open = False
+
+    def is_open(self) -> bool:
+        """Check if the circuit is open (backend should be skipped)."""
+        if not self._is_open:
+            return False
+        # Check if cooldown has elapsed
+        if time.monotonic() - self._last_failure_time > _CIRCUIT_COOLDOWN:
+            logger.info("Circuit breaker for %s: cooldown elapsed, half-open", self.name)
+            self._is_open = False
+            self._failure_count = 0
+            return False
+        return True
+
+    def record_success(self) -> None:
+        """Record a successful request — reset failure count."""
+        if self._failure_count > 0:
+            logger.info("Circuit breaker for %s: success, resetting", self.name)
+        self._failure_count = 0
+        self._is_open = False
+
+    def record_failure(self) -> None:
+        """Record a failed request — may open the circuit."""
+        self._failure_count += 1
+        self._last_failure_time = time.monotonic()
+        if self._failure_count >= _CIRCUIT_FAILURE_THRESHOLD:
+            self._is_open = True
+            logger.warning(
+                "Circuit breaker for %s: OPEN after %d failures (cooldown %.0fs)",
+                self.name,
+                self._failure_count,
+                _CIRCUIT_COOLDOWN,
+            )
+
+
+_gemini_circuit = _CircuitBreaker("Gemini")
+_ollama_circuit = _CircuitBreaker("Ollama")
+
+
 # ── Ollama availability cache ────────────────────────────────────
 
 _ollama_available: bool | None = None
 _ollama_last_check: float = 0
 _OLLAMA_CHECK_INTERVAL = 60  # Re-check every 60 seconds
 
-# ── Classification result cache ──────────────────────────────────
+# ── Classification result cache (bounded LRU) ────────────────────
 
-_classification_cache: dict[str, tuple[str, float]] = {}
+_CACHE_MAX_SIZE = 2000
 _CACHE_TTL = 86400  # 24 hours
+
+
+class _LRUCache:
+    """Simple bounded LRU cache with TTL expiry."""
+
+    def __init__(self, max_size: int = _CACHE_MAX_SIZE, ttl: float = _CACHE_TTL) -> None:
+        self._data: OrderedDict[str, tuple[str, float]] = OrderedDict()
+        self._max_size = max_size
+        self._ttl = ttl
+
+    def get(self, key: str) -> str | None:
+        """Get a cached value, or None if missing/expired."""
+        if key not in self._data:
+            return None
+        value, timestamp = self._data[key]
+        if time.time() - timestamp > self._ttl:
+            del self._data[key]
+            return None
+        # Move to end (most recently used)
+        self._data.move_to_end(key)
+        return value
+
+    def put(self, key: str, value: str) -> None:
+        """Store a value, evicting the oldest entry if at capacity."""
+        if key in self._data:
+            self._data.move_to_end(key)
+        self._data[key] = (value, time.time())
+        while len(self._data) > self._max_size:
+            self._data.popitem(last=False)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+
+_classification_cache = _LRUCache()
 
 
 # ── JSON extraction utility ──────────────────────────────────────
@@ -133,8 +258,16 @@ async def _gemini_generate(
     max_tokens: int = 256,
     json_mode: bool = False,
 ) -> str | None:
-    """Send a request to the Gemini REST API and return the response text."""
+    """Send a request to the Gemini REST API and return the response text.
+
+    Uses header-based authentication (x-goog-api-key) instead of URL query
+    parameter to avoid leaking the API key in logs.
+    """
     if not settings.gemini_api_key:
+        return None
+
+    if _gemini_circuit.is_open():
+        logger.debug("Gemini circuit breaker is open, skipping")
         return None
 
     if not await _acquire_rate_limit():
@@ -143,8 +276,12 @@ async def _gemini_generate(
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/models/"
         f"{settings.gemini_model}:generateContent"
-        f"?key={settings.gemini_api_key}"
     )
+
+    headers = {
+        "x-goog-api-key": settings.gemini_api_key,
+        "Content-Type": "application/json",
+    }
 
     # Build the request body
     contents = [
@@ -165,29 +302,41 @@ async def _gemini_generate(
     }
 
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(url, json=payload)
-            response.raise_for_status()
-            data = response.json()
+        client = await _get_http_client()
+        response = await client.post(
+            url,
+            json=payload,
+            headers=headers,
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        data = response.json()
 
-            # Extract text from Gemini response
-            candidates = data.get("candidates", [])
-            if candidates:
-                parts = candidates[0].get("content", {}).get("parts", [])
-                if parts:
-                    return parts[0].get("text", "").strip()
+        # Extract text from Gemini response
+        candidates = data.get("candidates", [])
+        if candidates:
+            parts = candidates[0].get("content", {}).get("parts", [])
+            if parts:
+                result = parts[0].get("text", "").strip()
+                if result:
+                    _gemini_circuit.record_success()
+                    return result
 
-            logger.warning("Gemini returned empty response: %s", data)
-            return None
+        logger.warning("Gemini returned empty response: %s", data)
+        _gemini_circuit.record_failure()
+        return None
 
     except httpx.TimeoutException:
         logger.warning("Gemini request timed out (%.1fs)", timeout)
+        _gemini_circuit.record_failure()
         return None
     except httpx.HTTPStatusError as e:
         logger.warning("Gemini HTTP %d: %s", e.response.status_code, e.response.text[:200])
+        _gemini_circuit.record_failure()
         return None
     except Exception as e:
         logger.warning("Gemini unexpected error: %s", e)
+        _gemini_circuit.record_failure()
         return None
 
 
@@ -207,6 +356,10 @@ async def _ollama_generate(
     if not settings.ollama_url:
         return None
 
+    if _ollama_circuit.is_open():
+        logger.debug("Ollama circuit breaker is open, skipping")
+        return None
+
     if not await _acquire_rate_limit():
         return None
 
@@ -224,23 +377,30 @@ async def _ollama_generate(
         payload["format"] = "json"
 
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(
-                f"{settings.ollama_url}/api/generate",
-                json=payload,
-            )
-            response.raise_for_status()
-            data = response.json()
-            return data.get("response", "").strip()
+        client = await _get_http_client()
+        response = await client.post(
+            f"{settings.ollama_url}/api/generate",
+            json=payload,
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        data = response.json()
+        result = data.get("response", "").strip()
+        if result:
+            _ollama_circuit.record_success()
+        return result
 
     except httpx.TimeoutException:
         logger.warning("Ollama request timed out (%.1fs)", timeout)
+        _ollama_circuit.record_failure()
         return None
     except httpx.HTTPError as e:
         logger.warning("Ollama HTTP error: %s", e)
+        _ollama_circuit.record_failure()
         return None
     except Exception as e:
         logger.warning("Ollama unexpected error: %s", e)
+        _ollama_circuit.record_failure()
         return None
 
 
@@ -260,6 +420,7 @@ async def _llm_generate(
     """Try Gemini first, fall back to Ollama if Gemini is unavailable.
 
     This is the single entry point for all LLM calls in the service.
+    Circuit breakers automatically skip backends that are down.
     """
     # ── Try Gemini first ──
     if settings.gemini_api_key:
@@ -349,11 +510,10 @@ async def classify_department(item_name: str) -> Optional[str]:
     """
     # Check cache first
     normalized = item_name.strip().lower()
-    if normalized in _classification_cache:
-        cached_result, timestamp = _classification_cache[normalized]
-        if time.time() - timestamp < _CACHE_TTL:
-            logger.debug("Cache hit for '%s' → '%s'", item_name, cached_result)
-            return cached_result
+    cached = _classification_cache.get(normalized)
+    if cached is not None:
+        logger.debug("Cache hit for '%s' → '%s'", item_name, cached)
+        return cached
 
     user_prompt = f'פריט: "{item_name}" → מחלקה:'
 
@@ -370,7 +530,7 @@ async def classify_department(item_name: str) -> Optional[str]:
     department = _validate_department(result)
 
     if department:
-        _classification_cache[normalized] = (department, time.time())
+        _classification_cache.put(normalized, department)
         logger.info("LLM classified '%s' → '%s'", item_name, department)
     else:
         logger.warning(
@@ -400,12 +560,11 @@ async def classify_departments_batch(
 
     for name in item_names:
         normalized = name.strip().lower()
-        if normalized in _classification_cache:
-            cached_result, timestamp = _classification_cache[normalized]
-            if time.time() - timestamp < _CACHE_TTL:
-                results[name] = cached_result
-                continue
-        uncached.append(name)
+        cached = _classification_cache.get(normalized)
+        if cached is not None:
+            results[name] = cached
+        else:
+            uncached.append(name)
 
     if not uncached:
         return results
@@ -456,7 +615,7 @@ async def classify_departments_batch(
                     results[name] = dept
                     if dept:
                         normalized = name.strip().lower()
-                        _classification_cache[normalized] = (dept, time.time())
+                        _classification_cache.put(normalized, dept)
                 else:
                     results[name] = None
             return results
@@ -656,9 +815,12 @@ async def is_ollama_available() -> bool:
         return _ollama_available
 
     try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            response = await client.get(f"{settings.ollama_url}/api/tags")
-            _ollama_available = response.status_code == 200
+        client = await _get_http_client()
+        response = await client.get(
+            f"{settings.ollama_url}/api/tags",
+            timeout=3.0,
+        )
+        _ollama_available = response.status_code == 200
     except Exception:
         _ollama_available = False
 
