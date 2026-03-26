@@ -1,18 +1,18 @@
 """Add quantity, unit, brand columns to grocery_items.
 
-Revision ID: 003
-Revises: 002
+Revision ID: 003_add_qty_brand
+Revises: 002_add_detail
 Create Date: 2026-03-26
 """
+from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
 
-# revision identifiers
-revision = "003"
-down_revision = "002"
-branch_labels = None
-depends_on = None
+revision: str = "003_add_qty_brand"
+down_revision: Union[str, None] = "002_add_detail"
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
