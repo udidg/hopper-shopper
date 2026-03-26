@@ -2,11 +2,13 @@
 
 import logging
 
-from telegram import BotCommand
+from telegram import BotCommand, Update
+from telegram.error import Conflict, NetworkError, TimedOut
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
     CommandHandler,
+    ContextTypes,
     InlineQueryHandler,
     MessageHandler,
     filters,
@@ -35,6 +37,8 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
+# Reduce noise from httpx
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # Bot commands for the Telegram menu
@@ -59,6 +63,33 @@ async def post_init(application: Application) -> None:
     logger.info("Bot commands registered in Telegram menu.")
 
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle errors globally."""
+    error = context.error
+
+    if isinstance(error, Conflict):
+        logger.error(
+            "409 Conflict — another bot instance is running with the same token! "
+            "Stop the other instance and restart."
+        )
+        return
+
+    if isinstance(error, (NetworkError, TimedOut)):
+        logger.warning("Network error (will retry): %s", error)
+        return
+
+    logger.error("Unhandled exception:", exc_info=context.error)
+
+    # Try to notify the user if possible
+    if isinstance(update, Update) and update.effective_message:
+        try:
+            await update.effective_message.reply_text(
+                "❌ אירעה שגיאה. נסו שוב."
+            )
+        except Exception:
+            pass
+
+
 def main() -> None:
     """Start the bot."""
     logger.info("Starting Hopper Shopper bot...")
@@ -70,6 +101,9 @@ def main() -> None:
         .post_init(post_init)
         .build()
     )
+
+    # ── Error handler ────────────────────────────────────────────
+    app.add_error_handler(error_handler)
 
     # ── Command handlers ─────────────────────────────────────────
     app.add_handler(CommandHandler("start", start_command))

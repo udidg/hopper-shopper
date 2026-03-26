@@ -4,6 +4,7 @@ Reused and adapted from the original backend/app/services/llm.py.
 """
 
 import logging
+import time
 from typing import Optional
 
 import httpx
@@ -18,16 +19,22 @@ from bot.services.grouping import (
 
 logger = logging.getLogger(__name__)
 
-_OLLAMA_TIMEOUT = 10.0
+_OLLAMA_TIMEOUT = 15.0
 
-_SYSTEM_PROMPT = """You are a grocery store department classifier.
-Given a grocery item name, classify it into exactly one of these store departments.
+# Cache for Ollama availability (avoid checking every request)
+_ollama_available: bool | None = None
+_ollama_last_check: float = 0
+_OLLAMA_CHECK_INTERVAL = 60  # Re-check every 60 seconds
+
+_SYSTEM_PROMPT = """You are a grocery store department classifier for an Israeli supermarket.
+Given a grocery item name (in Hebrew or English), classify it into exactly one of these store departments.
 
 Hebrew departments: {departments_he}
 
 Rules:
 - ALWAYS respond with the Hebrew department name, regardless of the input language.
 - Respond with ONLY the department name, nothing else.
+- Consider common Israeli grocery items and brands.
 - If you cannot classify the item, respond with "אחר".
 """
 
@@ -44,7 +51,7 @@ async def classify_department(item_name: str) -> Optional[str]:
 
     departments_he = ", ".join(DEPARTMENTS_HE)
     system_prompt = _SYSTEM_PROMPT.format(departments_he=departments_he)
-    user_prompt = f'Item: "{item_name}"'
+    user_prompt = f'סווג את הפריט הבא למחלקה בסופרמרקט: "{item_name}"'
 
     try:
         async with httpx.AsyncClient(timeout=_OLLAMA_TIMEOUT) as client:
@@ -98,12 +105,28 @@ async def classify_department(item_name: str) -> Optional[str]:
 
 
 async def is_ollama_available() -> bool:
-    """Check if the Ollama service is reachable."""
+    """Check if the Ollama service is reachable. Caches result for 60 seconds."""
+    global _ollama_available, _ollama_last_check
+
     if not settings.ollama_url:
         return False
+
+    now = time.time()
+    if _ollama_available is not None and (now - _ollama_last_check) < _OLLAMA_CHECK_INTERVAL:
+        return _ollama_available
+
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
             response = await client.get(f"{settings.ollama_url}/api/tags")
-            return response.status_code == 200
+            _ollama_available = response.status_code == 200
     except Exception:
-        return False
+        _ollama_available = False
+
+    _ollama_last_check = now
+
+    if _ollama_available:
+        logger.info("Ollama is available at %s", settings.ollama_url)
+    else:
+        logger.info("Ollama is not available at %s — using keyword matching only", settings.ollama_url)
+
+    return _ollama_available

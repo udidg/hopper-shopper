@@ -95,8 +95,9 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     if not items_text.strip():
         await update.message.reply_text(
-            "❌ נא לציין פריטים להוספה.\n"
-            "דוגמה: /add חלב, לחם, ביצים",
+            "🛒 כדי להוסיף פריטים, כתבו אחרי הפקודה:\n\n"
+            "/add חלב, לחם, ביצים\n\n"
+            "או שלחו רשימה כטקסט חופשי (פריט בכל שורה).",
         )
         return
 
@@ -137,8 +138,8 @@ async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if not items_text.strip():
         await update.message.reply_text(
-            "❌ נא לציין פריט להסרה.\n"
-            "דוגמה: /remove חלב",
+            "🗑️ כדי להסיר פריט, כתבו אחרי הפקודה:\n\n"
+            "/remove חלב",
         )
         return
 
@@ -187,8 +188,8 @@ async def done_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     if not item_name.strip():
         await update.message.reply_text(
-            "❌ נא לציין פריט לסימון.\n"
-            "דוגמה: /done חלב",
+            "✅ כדי לסמן פריט כנקנה, כתבו אחרי הפקודה:\n\n"
+            "/done חלב",
         )
         return
 
@@ -218,8 +219,8 @@ async def undone_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if not item_name.strip():
         await update.message.reply_text(
-            "❌ נא לציין פריט לביטול סימון.\n"
-            "דוגמה: /undone חלב",
+            "↩️ כדי לבטל סימון פריט, כתבו אחרי הפקודה:\n\n"
+            "/undone חלב",
         )
         return
 
@@ -294,8 +295,8 @@ async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     if len(parts) < 3:
         await update.message.reply_text(
-            "❌ שימוש: /price פריט מחיר\n"
-            "דוגמה: /price חלב 7.90",
+            "💰 כדי לעדכן מחיר, כתבו:\n\n"
+            "/price חלב 7.90",
         )
         return
 
