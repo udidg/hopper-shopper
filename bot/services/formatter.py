@@ -4,6 +4,10 @@ Uses plain text (no Markdown) to avoid escaping issues with Hebrew item names
 that may contain special characters like quotes, asterisks, etc.
 """
 
+from __future__ import annotations
+
+from datetime import datetime
+
 from bot.services.grouping import DEPARTMENTS_HE, DEPT_ORDER
 
 # Emoji mapping for each department
@@ -25,6 +29,96 @@ DEPT_EMOJI: dict[str, str] = {
 # Default emoji for uncategorized items
 DEFAULT_DEPT = "אחר"
 DEFAULT_EMOJI = "📦"
+
+
+# ── Unified item detail formatter ─────────────────────────────────
+
+
+def _build_qty_str(item: dict) -> str | None:
+    """Build a quantity string like '2 קילו' from an item dict."""
+    quantity = item.get("quantity")
+    if not quantity:
+        return None
+    unit = item.get("unit")
+    return f"{quantity} {unit}" if unit else str(quantity)
+
+
+def format_item_detail(item: dict, style: str = "inline") -> str:
+    """Format item details in a consistent style.
+
+    Styles:
+      - ``"inline"``: compact, for button labels / toasts → ``"חלב x2"``
+      - ``"line"``:   single line, for /list and /sort   → ``"חלב (2 ליטר, תנובה)"``
+      - ``"card"``:   multi-line detail card with emojis  → full card
+    """
+    name = item.get("name", "")
+    brand = item.get("brand")
+    qty_str = _build_qty_str(item)
+    desc = item.get("description")
+    price = item.get("price")
+    category = item.get("category")
+    added_by_name = item.get("added_by_name")
+    created_at = item.get("created_at")
+
+    # Avoid showing description if it duplicates brand
+    if desc and desc == brand:
+        desc = None
+
+    if style == "inline":
+        # Compact: "חלב x2" or "חלב (תנובה · 2 ליטר)"
+        hints: list[str] = []
+        if brand:
+            hints.append(brand)
+        if qty_str:
+            hints.append(qty_str)
+        if desc:
+            hints.append(desc)
+        if price is not None:
+            hints.append(f"₪{float(price):.2f}")
+        if hints:
+            return f"{name} ({' · '.join(hints)})"
+        return name
+
+    if style == "line":
+        # Single line: "חלב (2 ליטר, תנובה) ₪7.90"
+        parts: list[str] = []
+        if qty_str:
+            parts.append(qty_str)
+        if brand:
+            parts.append(brand)
+        if desc:
+            parts.append(desc)
+        result = name
+        if parts:
+            result += f" ({', '.join(parts)})"
+        if price is not None:
+            result += f" ₪{float(price):.2f}"
+        return result
+
+    # style == "card"
+    lines: list[str] = [f"📦 {name}"]
+    if brand:
+        lines.append(f"🏷️ {brand}")
+    if qty_str:
+        lines.append(f"📏 {qty_str}")
+    if desc:
+        lines.append(f"📝 {desc}")
+    if category:
+        dept_emoji = DEPT_EMOJI.get(category, DEFAULT_EMOJI)
+        lines.append(f"{dept_emoji} {category}")
+    if price is not None:
+        lines.append(f"💰 ₪{float(price):.2f}")
+    if added_by_name:
+        lines.append(f"👤 {added_by_name}")
+    if created_at:
+        if isinstance(created_at, datetime):
+            lines.append(f"📅 {created_at.strftime('%d/%m/%Y %H:%M')}")
+        elif isinstance(created_at, str):
+            lines.append(f"📅 {created_at}")
+    return "\n".join(lines)
+
+
+# ── List formatters ───────────────────────────────────────────────
 
 
 def format_sorted_list(
@@ -78,40 +172,10 @@ def format_sorted_list(
         lines.append(f"{emoji} {dept}")
 
         for item in groups[dept]:
-            name = item["name"]
             is_done = item.get("is_done", False)
-
-            # Build item line
-            if is_done:
-                item_text = f"  ✅ {name}"
-            else:
-                item_text = f"  • {name}"
-
-            # Add quantity/unit if available
-            quantity = item.get("quantity")
-            unit = item.get("unit")
-            if quantity:
-                if unit:
-                    item_text += f" ({quantity} {unit})"
-                else:
-                    item_text += f" ({quantity})"
-
-            # Add brand if available
-            brand = item.get("brand")
-            if brand:
-                item_text += f" [{brand}]"
-
-            # Add price if available
-            price = item.get("price")
-            if price is not None:
-                item_text += f" ₪{price:.2f}"
-
-            # Add description if available (and different from brand)
-            desc = item.get("description")
-            if desc and desc != brand:
-                item_text += f" — {desc}"
-
-            lines.append(item_text)
+            prefix = "  ✅" if is_done else "  •"
+            detail_line = format_item_detail(item, style="line")
+            lines.append(f"{prefix} {detail_line}")
 
         lines.append("")  # Empty line between departments
 
@@ -144,28 +208,8 @@ def format_plain_list(items: list[dict], list_name: str = "רשימת קניות
 
     if pending:
         for item in pending:
-            line = f"  ☐ {item['name']}"
-            # Add quantity/unit
-            quantity = item.get("quantity")
-            unit = item.get("unit")
-            if quantity:
-                if unit:
-                    line += f" ({quantity} {unit})"
-                else:
-                    line += f" ({quantity})"
-            # Add brand
-            brand = item.get("brand")
-            if brand:
-                line += f" [{brand}]"
-            # Add price
-            price = item.get("price")
-            if price is not None:
-                line += f" ₪{price:.2f}"
-            # Add description (if different from brand)
-            desc = item.get("description")
-            if desc and desc != brand:
-                line += f" — {desc}"
-            lines.append(line)
+            detail_line = format_item_detail(item, style="line")
+            lines.append(f"  ☐ {detail_line}")
 
     if done:
         lines.append("")
@@ -251,7 +295,8 @@ def format_help() -> str:
 
 💰 מחירים ופרטים:
   /price פריט מחיר — עדכון מחיר פריט
-  /detail פריט פרטים — שמירת מותג/פרטים לפריט
+  /detail — בחירת פריט לעריכת פרטים (מצב מודרך)
+  /detail פריט פרטים — שמירת פרטים ישירה
 
 📊 מידע:
   /help — הצגת עזרה זו
@@ -260,5 +305,6 @@ def format_help() -> str:
   • שלחו רשימה כטקסט חופשי (פריט בכל שורה) והבוט יזהה ויסדר אותה אוטומטית
   • כתבו בשפה חופשית: "תוסיף חלב ולחם", "קניתי ביצים", "מה ברשימה?"
   • הבוט מזהה כמויות ומותגים: "2 קילו עגבניות שרי, חלב תנובה 1 ליטר"
+  • במצב קניות (/shop), לחצו ℹ️ ליד פריט כדי לראות פרטים מלאים
   • השתמשו ב-/detail כדי לשמור מותג מועדף — למשל: /detail תפוחי אדמה של דוד משה
   • כשהרשימה ריקה, /list יציע פריטים שאתם בדרך כלל קונים"""

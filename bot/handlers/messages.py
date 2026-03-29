@@ -186,21 +186,31 @@ async def _handle_add_action(
 
 
 def _format_item_info(item) -> dict:
-    """Format a GroceryItem into a dict for the formatter."""
-    detail_parts = []
-    if item.quantity:
-        qty_str = item.quantity
-        if item.unit:
-            qty_str += f" {item.unit}"
-        detail_parts.append(qty_str)
-    if item.brand:
-        detail_parts.append(item.brand)
-    if item.description and item.description != item.brand:
-        detail_parts.append(item.description)
+    """Format a GroceryItem into a dict for the formatter.
+
+    Uses format_item_detail with 'inline' style for consistent detail display.
+    Returns a dict with 'name' and 'detail' keys for format_items_added().
+    """
+    from bot.services.formatter import format_item_detail
+
+    item_dict = {
+        "name": item.name,
+        "brand": item.brand,
+        "quantity": item.quantity,
+        "unit": item.unit,
+        "description": item.description,
+    }
+    # format_item_detail returns "name (details)" — extract just the detail part
+    inline = format_item_detail(item_dict, style="inline")
+    # If there are parenthesized details, extract them; otherwise no detail
+    if "(" in inline and inline.endswith(")"):
+        detail = inline[inline.index("(") + 1 : -1]
+    else:
+        detail = None
 
     return {
         "name": item.name,
-        "detail": " | ".join(detail_parts) if detail_parts else item.description,
+        "detail": detail,
     }
 
 

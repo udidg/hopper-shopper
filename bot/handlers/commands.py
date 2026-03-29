@@ -461,9 +461,12 @@ async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def detail_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /detail — save a default detail/brand for an item.
 
-    Usage: /detail תפוחי אדמה של דוד משה
-    This saves "של דוד משה" as the default detail for "תפוחי אדמה".
-    Next time you add "תפוחי אדמה", the detail will be auto-applied.
+    Two modes:
+      1. Guided: ``/detail`` (no args) — shows item picker with inline buttons
+      2. Direct: ``/detail תפוחי אדמה של דוד משה`` — saves detail directly
+
+    The guided flow shows the current list items as buttons. Tapping one
+    shows the item's current details and prompts for new ones.
     """
     if not update.message or not update.message.text:
         return
@@ -471,16 +474,11 @@ async def detail_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     args = _extract_args(update.message.text)
 
     if not args.strip():
-        await update.message.reply_text(
-            "❌ שימוש: /detail פריט פרטים\n"
-            "דוגמה: /detail תפוחי אדמה של דוד משה\n\n"
-            "הפרטים יישמרו ויוצגו אוטומטית בכל פעם שתוסיפו את הפריט.",
-        )
+        # Guided flow: show item picker
+        await _detail_guided_flow(update, context)
         return
 
-    # Split: first word(s) = item name, rest = detail
-    # We need a smarter split — try to match against known items in history
-    # For now, use a simple approach: everything before the last known separator
+    # Direct flow: parse item name + detail from args
     parts = args.strip()
 
     # Try to find the item name by checking history
@@ -550,6 +548,65 @@ async def detail_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         f"פריט: {item_name}\n"
         f"פרטים: {detail}\n\n"
         f"מעכשיו כשתוסיפו '{item_name}' הפרטים יופיעו אוטומטית.",
+    )
+
+
+async def _detail_guided_flow(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Show the current list items as inline buttons for detail editing.
+
+    When the user taps an item, the detail card is shown via the
+    ``dt:pick:{item_id}`` callback (handled in callbacks.py).
+    """
+    try:
+        async with db_session_with_retry() as session:
+            tg_user = update.effective_user
+            chat = update.effective_chat
+
+            if tg_user is None or chat is None:
+                return
+
+            user = await get_or_create_user(
+                session,
+                telegram_id=tg_user.id,
+                username=tg_user.username,
+                display_name=tg_user.full_name,
+            )
+
+            grocery_list = await get_or_create_active_list(
+                session, chat_id=chat.id, user_id=user.id
+            )
+
+            items = await get_list_items(session, grocery_list.id)
+    except Exception:
+        logger.exception("Database error in /detail guided flow")
+        await update.message.reply_text(DB_ERROR_MSG)
+        return
+
+    if not items:
+        await update.message.reply_text(
+            "📝 הרשימה ריקה!\n\n"
+            "הוסיפו פריטים עם /add ואז השתמשו ב-/detail כדי לערוך פרטים.",
+        )
+        return
+
+    # Build item picker keyboard
+    keyboard: list[list[InlineKeyboardButton]] = []
+    for item in items:
+        label = item.name
+        if item.description:
+            label += f" — {item.description}"
+        keyboard.append([
+            InlineKeyboardButton(
+                f"📝 {label}",
+                callback_data=f"dt:pick:{item.id}",
+            )
+        ])
+
+    await update.message.reply_text(
+        "✏️ בחרו פריט לעריכת פרטים:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
 

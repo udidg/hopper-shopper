@@ -21,6 +21,7 @@ from bot.config import settings
 from bot.database import dispose_engine
 from bot.handlers.callbacks import (
     handle_clear_callback,
+    handle_detail_pick_callback,
     handle_list_view_callback,
     handle_quick_add_callback,
     handle_shop_callback,
@@ -259,6 +260,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(handle_clear_callback, pattern=r"^clear:"))
     app.add_handler(CallbackQueryHandler(handle_quick_add_callback, pattern=r"^qa:"))
     app.add_handler(CallbackQueryHandler(handle_list_view_callback, pattern=r"^lv:"))
+    app.add_handler(CallbackQueryHandler(handle_detail_pick_callback, pattern=r"^dt:"))
 
     # ── Inline query handler (suggestions) ───────────────────────
     app.add_handler(InlineQueryHandler(handle_inline_query))
