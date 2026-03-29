@@ -178,13 +178,33 @@ docker compose exec ollama ollama pull gemma3:1b
 
 ---
 
-## Updating
+## Updating (Automatic via Watchtower)
 
-The bot image is automatically built and pushed to Docker Hub on every push to `main`. To update your NAS deployment:
+The bot image is automatically built and pushed to Docker Hub on every push to `main`.
+
+**Watchtower** runs as a service in the compose stack and automatically detects new images, pulls them, and recreates the bot container — no manual intervention required.
+
+- **Poll interval:** Every 5 minutes (lightweight HEAD request to Docker Hub)
+- **Scope:** Only the `bot` container is watched (not `db` or `ollama`)
+- **Cleanup:** Old images are automatically pruned after updates
+- **Overhead:** ~20MB RAM (capped at 64MB)
+
+### How it works
+
+1. You push code to `main`
+2. GitHub Actions builds and pushes the new image to Docker Hub
+3. Within ~5 minutes, Watchtower detects the new image digest
+4. Watchtower pulls the new image, gracefully stops the bot (respecting `stop_grace_period: 15s`), and starts a new container
+5. The old image is automatically removed
+
+### Manual update (if needed)
+
+If you need to force an immediate update without waiting for the poll interval:
 
 ```bash
-docker compose pull
-docker compose up -d
+docker compose pull bot
+docker compose up -d bot
+docker image prune -f
 ```
 
 ---
@@ -193,10 +213,11 @@ docker compose up -d
 
 | Task | Command |
 |------|---------|
-|Pull latest docker-compose file|curl -o docker-compose.yml https://raw.githubusercontent.com/udidg/hopper-shopper/main/docker-compose.yml|
-| View logs | `docker compose logs -f bot` |
+| Pull latest docker-compose file | `curl -o docker-compose.yml https://raw.githubusercontent.com/udidg/hopper-shopper/main/docker-compose.yml` |
+| View bot logs | `docker compose logs -f bot` |
+| View Watchtower logs | `docker compose logs -f watchtower` |
 | Restart bot | `docker compose restart bot` |
-| Update to latest | `docker compose pull && docker compose up -d` |
+| Force manual update | `docker compose pull bot && docker compose up -d bot` |
 | Backup database | `docker compose exec db pg_dump -U hopper hopper_shopper > backup.sql` |
 | Restore database | `cat backup.sql \| docker compose exec -T db psql -U hopper hopper_shopper` |
 | Stop (keep network) | `docker compose stop` |
@@ -216,5 +237,6 @@ docker compose up -d
 | Migration fails on startup | Check `docker compose logs bot` for the specific SQL error. Ensure the database is accessible. |
 | Container keeps restarting | Check logs for Python errors. Common cause: missing or invalid `TELEGRAM_BOT_TOKEN`. |
 | Items not classified into departments | Item may not be in the keyword dictionary. Enable Ollama for smarter classification. |
+| Bot not auto-updating | Check Watchtower logs: `docker compose logs watchtower`. Verify the bot container has the scope label: `docker inspect <container> \| grep watchtower`. |
 | `network hopper-net declared as external, but could not be found` | Run `docker network create hopper-net` on the NAS. |
 | Brief network dropout on `docker compose up` | The external network should prevent this. If it persists, check `cat /proc/sys/net/bridge/bridge-nf-call-iptables` — set to `0` if it's `1`. |

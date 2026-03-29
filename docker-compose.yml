@@ -30,6 +30,8 @@ services:
       retries: 3
       start_period: 30s
     mem_limit: 512m
+    labels:
+      - "com.centurylinklabs.watchtower.scope=hopper-shopper"
 
   db:
     image: postgres:16-alpine
@@ -58,6 +60,25 @@ services:
       - ollama_data:/root/.ollama
     restart: unless-stopped
     mem_limit: 2g
+
+  # Auto-updater — polls Docker Hub and recreates the bot container
+  # when a new image is available. Only watches containers with the
+  # matching scope label (currently just "bot").
+  watchtower:
+    image: containrrr/watchtower
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      WATCHTOWER_CLEANUP: "true"              # Remove old images after update
+      WATCHTOWER_POLL_INTERVAL: 300           # Check every 5 minutes
+      WATCHTOWER_SCOPE: hopper-shopper        # Only watch scoped containers
+      WATCHTOWER_ROLLING_RESTART: "true"      # Restart one at a time
+    labels:
+      - "com.centurylinklabs.watchtower.scope=hopper-shopper"
+    networks:
+      - hopper-net
+    restart: unless-stopped
+    mem_limit: 64m
 
 volumes:
   pgdata:
