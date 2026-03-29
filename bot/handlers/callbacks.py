@@ -68,9 +68,7 @@ async def shop_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     done = sum(1 for i in items if i.is_done)
 
     await update.message.reply_text(
-        f"🛍️ מצב קניות\n\n"
-        f"לחצו על פריט כדי לסמן/לבטל סימון ✅\n"
-        f"📊 {pending} נותרו | {done} נקנו",
+        _build_shopping_header(pending, done),
         reply_markup=keyboard,
     )
 
@@ -130,6 +128,9 @@ async def handle_shop_callback(
             item.is_done = not item.is_done
             await session.flush()
 
+            # Build a detail toast for the toggled item
+            toast = _build_toggle_toast(item)
+
             # Reload all items for this list
             items = await get_list_items(session, item.list_id)
     except Exception:
@@ -137,8 +138,8 @@ async def handle_shop_callback(
         await query.answer("❌ שגיאה. נסו שוב.", show_alert=True)
         return
 
-    # Answer the callback to dismiss the loading indicator
-    await query.answer()
+    # Answer with detail toast (brief info about the toggled item)
+    await query.answer(toast)
 
     # Rebuild the keyboard
     keyboard = _build_shopping_keyboard(items)
@@ -203,11 +204,7 @@ async def handle_shop_callback(
         except Exception:
             logger.exception("Error editing shop message")
     else:
-        text = (
-            f"🛍️ מצב קניות\n\n"
-            f"לחצו על פריט כדי לסמן/לבטל סימון ✅\n"
-            f"📊 {pending} נותרו | {done} נקנו"
-        )
+        text = _build_shopping_header(pending, done)
         try:
             await query.edit_message_text(
                 text=text,
@@ -360,8 +357,76 @@ async def handle_quick_add_callback(
         logger.exception("Error editing quick-add message")
 
 
+def _build_progress_bar(done: int, total: int, width: int = 10) -> str:
+    """Build a text-based progress bar for shopping mode.
+
+    Example: ▓▓▓▓▓▓░░░░ 60%
+    """
+    if total == 0:
+        return "░" * width
+    ratio = done / total
+    filled = round(ratio * width)
+    bar = "▓" * filled + "░" * (width - filled)
+    pct = round(ratio * 100)
+    return f"{bar} {pct}%"
+
+
+def _build_shopping_header(pending: int, done: int) -> str:
+    """Build the shopping mode header text with progress bar."""
+    total = pending + done
+    progress = _build_progress_bar(done, total)
+
+    return (
+        f"🛒 מצב קניות\n"
+        f"\n"
+        f"{progress}\n"
+        f"📊 {pending} נותרו · {done} נקנו\n"
+        f"\n"
+        f"לחצו על פריט לסימון ✅"
+    )
+
+
+def _build_toggle_toast(item) -> str:
+    """Build a brief toast message shown after toggling an item.
+
+    Includes item details if available (brand, quantity, description).
+    Telegram toast is limited to ~200 chars.
+    """
+    if item.is_done:
+        status = "✅"
+    else:
+        status = "↩️"
+
+    parts = [f"{status} {item.name}"]
+
+    # Add brief detail hints
+    detail_hints: list[str] = []
+    if item.brand:
+        detail_hints.append(item.brand)
+    if item.quantity:
+        qty = item.quantity
+        if item.unit:
+            qty += f" {item.unit}"
+        detail_hints.append(qty)
+    if item.description and item.description != item.brand:
+        detail_hints.append(item.description)
+    if item.price is not None:
+        detail_hints.append(f"₪{float(item.price):.2f}")
+
+    if detail_hints:
+        parts.append(f"({' · '.join(detail_hints)})")
+
+    toast = " ".join(parts)
+
+    # Truncate if needed (toast limit ~200 chars)
+    if len(toast) > 200:
+        toast = toast[:197] + "..."
+
+    return toast
+
+
 async def _handle_detail_popup(query, item_id_str: str) -> None:
-    """Show item details in a popup (show_alert) when ℹ️ is tapped."""
+    """Show item details in a popup (show_alert) when detail callback is triggered."""
     try:
         item_id = int(item_id_str)
     except ValueError:
@@ -417,13 +482,11 @@ async def _handle_detail_popup(query, item_id_str: str) -> None:
     if added_by_name:
         lines.append(f"👤 {added_by_name}")
     if item.created_at:
-        # Format date in a readable way
         if isinstance(item.created_at, datetime):
             lines.append(f"📅 {item.created_at.strftime('%d/%m/%Y %H:%M')}")
 
     detail_text = "\n".join(lines)
 
-    # Telegram show_alert has a 200-char limit; truncate if needed
     if len(detail_text) > 200:
         detail_text = detail_text[:197] + "..."
 
@@ -433,9 +496,9 @@ async def _handle_detail_popup(query, item_id_str: str) -> None:
 def _build_shopping_keyboard(items) -> InlineKeyboardMarkup:
     """Build an inline keyboard with items grouped by department.
 
-    Each item gets two buttons in a row:
-    - Left: toggle done/undone (tap to check off)
-    - Right: ℹ️ (tap to view details)
+    Each item is a single full-width button. Details are shown in the
+    toggle toast after tapping. Department headers are visually distinct
+    with wider separators and item counts.
     """
     # Group by department
     groups: dict[str, list] = {}
@@ -456,48 +519,49 @@ def _build_shopping_keyboard(items) -> InlineKeyboardMarkup:
     for dept in sorted_depts:
         dept_items = groups[dept]
         emoji = DEPT_EMOJI.get(dept, DEFAULT_EMOJI)
+        dept_done = sum(1 for i in dept_items if i.is_done)
+        dept_total = len(dept_items)
 
-        # Add department header as a non-clickable label
+        # Department header — visually distinct with count
+        if dept_done == dept_total:
+            header = f"━━ {emoji} {dept} ✅ ━━"
+        else:
+            header = f"━━ {emoji} {dept} ({dept_done}/{dept_total}) ━━"
+
         keyboard.append([
             InlineKeyboardButton(
-                f"── {emoji} {dept} ──",
+                header,
                 callback_data="shop:noop:0",
             )
         ])
 
         for item in dept_items:
-            # Simplified label — just name with optional quantity hint
+            # Build label with name and optional brief hints
             display_name = item.name
+
+            # Add quantity hint
             if item.quantity:
-                display_name += f" x{item.quantity}"
+                if item.unit:
+                    display_name += f" · {item.quantity} {item.unit}"
+                else:
+                    display_name += f" x{item.quantity}"
+
+            # Add brand hint (short)
+            if item.brand:
+                display_name += f" [{item.brand}]"
 
             if item.is_done:
-                label = f"✅ {display_name}"
+                # Strikethrough effect using Unicode combining characters
+                label = f"  ✅  {display_name}"
             else:
-                label = f"☐ {display_name}"
+                label = f"  ☐  {display_name}"
 
-            # Determine if item has any details worth showing
-            has_details = any([
-                item.brand, item.quantity, item.unit,
-                item.description, item.price is not None,
-            ])
-
-            row = [
+            keyboard.append([
                 InlineKeyboardButton(
                     label,
                     callback_data=f"shop:toggle:{item.id}",
                 )
-            ]
-
-            # Add ℹ️ button if item has details, or always for discoverability
-            row.append(
-                InlineKeyboardButton(
-                    "ℹ️" if has_details else "·",
-                    callback_data=f"shop:detail:{item.id}",
-                )
-            )
-
-            keyboard.append(row)
+            ])
 
     return InlineKeyboardMarkup(keyboard)
 
@@ -562,9 +626,7 @@ async def handle_list_view_callback(
 
         try:
             await query.edit_message_text(
-                f"🛍️ מצב קניות\n\n"
-                f"לחצו על פריט כדי לסמן/לבטל סימון ✅\n"
-                f"📊 {pending} נותרו | {done} נקנו",
+                _build_shopping_header(pending, done),
                 reply_markup=keyboard,
             )
         except BadRequest as e:
