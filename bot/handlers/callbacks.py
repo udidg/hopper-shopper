@@ -1,6 +1,7 @@
 """Callback query handlers for inline keyboard buttons (shopping mode, clear confirmation, quick-add)."""
 
 import logging
+from datetime import datetime
 
 from sqlalchemy import select
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -8,6 +9,7 @@ from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
 from bot.models.grocery_item import GroceryItem
+from bot.models.user import User
 from bot.services.formatter import DEPT_EMOJI, DEFAULT_EMOJI
 from bot.services.grouping import DEPT_ORDER
 from bot.services.list_manager import (
@@ -95,6 +97,11 @@ async def handle_shop_callback(
     if action == "noop":
         # Department header button — do nothing
         await query.answer()
+        return
+
+    if action == "detail":
+        # Show item details in a popup
+        await _handle_detail_popup(query, parts[2])
         return
 
     try:
@@ -353,8 +360,83 @@ async def handle_quick_add_callback(
         logger.exception("Error editing quick-add message")
 
 
+async def _handle_detail_popup(query, item_id_str: str) -> None:
+    """Show item details in a popup (show_alert) when ℹ️ is tapped."""
+    try:
+        item_id = int(item_id_str)
+    except ValueError:
+        await query.answer()
+        return
+
+    if item_id <= 0 or item_id > 2_147_483_647:
+        await query.answer()
+        return
+
+    try:
+        async with db_session_with_retry() as session:
+            result = await session.execute(
+                select(GroceryItem).where(GroceryItem.id == item_id)
+            )
+            item = result.scalar_one_or_none()
+
+            if item is None:
+                await query.answer("❌ פריט לא נמצא", show_alert=True)
+                return
+
+            # Look up who added the item
+            added_by_name = None
+            if item.added_by:
+                user_result = await session.execute(
+                    select(User).where(User.id == item.added_by)
+                )
+                user = user_result.scalar_one_or_none()
+                if user:
+                    added_by_name = user.display_name or user.username or str(user.telegram_id)
+    except Exception:
+        logger.exception("Database error in detail popup")
+        await query.answer("❌ שגיאה. נסו שוב.", show_alert=True)
+        return
+
+    # Build detail text (show_alert supports up to 200 chars)
+    lines: list[str] = [f"📦 {item.name}"]
+
+    if item.brand:
+        lines.append(f"🏷️ {item.brand}")
+    if item.quantity:
+        qty = item.quantity
+        if item.unit:
+            qty += f" {item.unit}"
+        lines.append(f"📏 {qty}")
+    if item.description and item.description != item.brand:
+        lines.append(f"📝 {item.description}")
+    if item.category:
+        dept_emoji = DEPT_EMOJI.get(item.category, DEFAULT_EMOJI)
+        lines.append(f"{dept_emoji} {item.category}")
+    if item.price is not None:
+        lines.append(f"💰 ₪{float(item.price):.2f}")
+    if added_by_name:
+        lines.append(f"👤 {added_by_name}")
+    if item.created_at:
+        # Format date in a readable way
+        if isinstance(item.created_at, datetime):
+            lines.append(f"📅 {item.created_at.strftime('%d/%m/%Y %H:%M')}")
+
+    detail_text = "\n".join(lines)
+
+    # Telegram show_alert has a 200-char limit; truncate if needed
+    if len(detail_text) > 200:
+        detail_text = detail_text[:197] + "..."
+
+    await query.answer(detail_text, show_alert=True)
+
+
 def _build_shopping_keyboard(items) -> InlineKeyboardMarkup:
-    """Build an inline keyboard with items grouped by department."""
+    """Build an inline keyboard with items grouped by department.
+
+    Each item gets two buttons in a row:
+    - Left: toggle done/undone (tap to check off)
+    - Right: ℹ️ (tap to view details)
+    """
     # Group by department
     groups: dict[str, list] = {}
     for item in items:
@@ -384,29 +466,38 @@ def _build_shopping_keyboard(items) -> InlineKeyboardMarkup:
         ])
 
         for item in dept_items:
-            # Build label with quantity/unit/brand
-            name_parts = [item.name]
+            # Simplified label — just name with optional quantity hint
+            display_name = item.name
             if item.quantity:
-                if item.unit:
-                    name_parts.append(f"({item.quantity} {item.unit})")
-                else:
-                    name_parts.append(f"({item.quantity})")
-            if item.brand:
-                name_parts.append(f"[{item.brand}]")
-
-            display_name = " ".join(name_parts)
+                display_name += f" x{item.quantity}"
 
             if item.is_done:
                 label = f"✅ {display_name}"
             else:
                 label = f"☐ {display_name}"
 
-            keyboard.append([
+            # Determine if item has any details worth showing
+            has_details = any([
+                item.brand, item.quantity, item.unit,
+                item.description, item.price is not None,
+            ])
+
+            row = [
                 InlineKeyboardButton(
                     label,
                     callback_data=f"shop:toggle:{item.id}",
                 )
-            ])
+            ]
+
+            # Add ℹ️ button if item has details, or always for discoverability
+            row.append(
+                InlineKeyboardButton(
+                    "ℹ️" if has_details else "·",
+                    callback_data=f"shop:detail:{item.id}",
+                )
+            )
+
+            keyboard.append(row)
 
     return InlineKeyboardMarkup(keyboard)
 

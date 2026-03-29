@@ -717,32 +717,164 @@ async def parse_items_smart(text: str) -> list[dict] | None:
 
 # ── Natural language intent understanding ────────────────────────
 
-_INTENT_SYSTEM = """אתה עוזר לנהל רשימת קניות. נתח את כוונת המשתמש.
+_INTENT_SYSTEM = """אתה עוזר לנהל רשימת קניות בקבוצת טלגרם. נתח את כוונת המשתמש.
 
-פעולות אפשריות: add, remove, done, list, sort, clear, help, unknown
+פעולות אפשריות: add, remove, done, update, list, sort, clear, help, chat
 
-דוגמאות:
+דוגמאות — הוספה (add):
 "תוסיף חלב ולחם" → {"action": "add", "items": ["חלב", "לחם"]}
 "תוסיפי בבקשה ביצים" → {"action": "add", "items": ["ביצים"]}
+"חלב ולחם" → {"action": "add", "items": ["חלב", "לחם"]}
+"ביצים, גבינה" → {"action": "add", "items": ["ביצים", "גבינה"]}
+
+דוגמאות — הסרה (remove):
 "תוריד את הביצים" → {"action": "remove", "items": ["ביצים"]}
 "תמחק חלב מהרשימה" → {"action": "remove", "items": ["חלב"]}
+
+דוגמאות — סימון כנקנה (done):
 "קניתי חלב" → {"action": "done", "items": ["חלב"]}
 "לקחתי את הלחם" → {"action": "done", "items": ["לחם"]}
+
+דוגמאות — עדכון פריט קיים (update):
+"קח את החלב של תנובה" → {"action": "update", "items": [{"name": "חלב", "brand": "תנובה"}]}
+"העגבניות צריכות להיות שרי" → {"action": "update", "items": [{"name": "עגבניות", "detail": "שרי"}]}
+"קח 2 קילו תפוחים" → {"action": "update", "items": [{"name": "תפוחים", "quantity": "2", "unit": "קילו"}]}
+"החלב צריך להיות 3 אחוז" → {"action": "update", "items": [{"name": "חלב", "detail": "3 אחוז"}]}
+
+דוגמאות — תצוגה ופקודות:
 "מה ברשימה?" → {"action": "list", "items": []}
 "תראה לי את הרשימה" → {"action": "list", "items": []}
 "תמיין לפי מחלקות" → {"action": "sort", "items": []}
 "תנקה הכל" → {"action": "clear", "items": []}
 "עזרה" → {"action": "help", "items": []}
 "מה אפשר לעשות?" → {"action": "help", "items": []}
-"מה שלומך?" → {"action": "unknown", "items": []}
+
+דוגמאות — שיחה רגילה (chat) — לא קשור לרשימת קניות:
+"מה קורה?" → {"action": "chat", "items": []}
+"אני בדרך" → {"action": "chat", "items": []}
+"תודה רבה" → {"action": "chat", "items": []}
+"בסדר" → {"action": "chat", "items": []}
+"ok" → {"action": "chat", "items": []}
+"👍" → {"action": "chat", "items": []}
+"אני אגיע בעוד 10 דקות" → {"action": "chat", "items": []}
+"מה שלומך?" → {"action": "chat", "items": []}
+"לול" → {"action": "chat", "items": []}
+"אחלה" → {"action": "chat", "items": []}
+"מתי אתה מגיע?" → {"action": "chat", "items": []}
+"ראיתי את ההודעה" → {"action": "chat", "items": []}
 
 חשוב מאוד:
-- אם המשתמש מזכיר פריטים בכל צורה שהיא (גם בלי פועל ברור), זו כנראה הוספה (add).
-- "חלב ולחם" → add. "ביצים, גבינה" → add.
-- אם יש ספק, העדף add על unknown.
+- אם ההודעה היא שיחה רגילה, ברכה, תגובה, או לא קשורה לקניות — השתמש ב-chat.
+- השתמש ב-add רק כשהמשתמש מזכיר פריטי מזון/קניות ברורים שרוצה להוסיף.
+- השתמש ב-update כשהמשתמש מתייחס לפריט שכבר ברשימה ורוצה לעדכן פרטים (מותג, כמות, הערה).
+- עבור update, החזר items כמערך של אובייקטים עם name ושדות אופציונליים: brand, quantity, unit, detail.
+- עבור שאר הפעולות, items הוא מערך של מחרוזות.
 
 ענה אך ורק ב-JSON תקין, ללא הסבר נוסף.
 """
+
+_INTENT_WITH_CONTEXT_SYSTEM = """אתה עוזר לנהל רשימת קניות בקבוצת טלגרם. נתח את כוונת המשתמש.
+
+הפריטים הנוכחיים ברשימה:
+{list_items}
+
+פעולות אפשריות: add, remove, done, update, list, sort, clear, help, chat
+
+דוגמאות — הוספה (add):
+"תוסיף חלב ולחם" → {{"action": "add", "items": ["חלב", "לחם"]}}
+"תוסיפי בבקשה ביצים" → {{"action": "add", "items": ["ביצים"]}}
+"חלב ולחם" → {{"action": "add", "items": ["חלב", "לחם"]}}
+
+דוגמאות — הסרה (remove):
+"תוריד את הביצים" → {{"action": "remove", "items": ["ביצים"]}}
+"תמחק חלב מהרשימה" → {{"action": "remove", "items": ["חלב"]}}
+
+דוגמאות — סימון כנקנה (done):
+"קניתי חלב" → {{"action": "done", "items": ["חלב"]}}
+"לקחתי את הלחם" → {{"action": "done", "items": ["לחם"]}}
+
+דוגמאות — עדכון פריט קיים (update):
+"קח את החלב של תנובה" → {{"action": "update", "items": [{{"name": "חלב", "brand": "תנובה"}}]}}
+"העגבניות צריכות להיות שרי" → {{"action": "update", "items": [{{"name": "עגבניות", "detail": "שרי"}}]}}
+"קח 2 קילו תפוחים" → {{"action": "update", "items": [{{"name": "תפוחים", "quantity": "2", "unit": "קילו"}}]}}
+"החלב צריך להיות 3 אחוז" → {{"action": "update", "items": [{{"name": "חלב", "detail": "3 אחוז"}}]}}
+
+דוגמאות — תצוגה ופקודות:
+"מה ברשימה?" → {{"action": "list", "items": []}}
+"תראה לי את הרשימה" → {{"action": "list", "items": []}}
+"תמיין לפי מחלקות" → {{"action": "sort", "items": []}}
+"תנקה הכל" → {{"action": "clear", "items": []}}
+"עזרה" → {{"action": "help", "items": []}}
+
+דוגמאות — שיחה רגילה (chat):
+"מה קורה?" → {{"action": "chat", "items": []}}
+"אני בדרך" → {{"action": "chat", "items": []}}
+"תודה רבה" → {{"action": "chat", "items": []}}
+"בסדר" → {{"action": "chat", "items": []}}
+"ok" → {{"action": "chat", "items": []}}
+"👍" → {{"action": "chat", "items": []}}
+"אני אגיע בעוד 10 דקות" → {{"action": "chat", "items": []}}
+"מה שלומך?" → {{"action": "chat", "items": []}}
+
+חשוב מאוד:
+- אם ההודעה היא שיחה רגילה, ברכה, תגובה, או לא קשורה לקניות — השתמש ב-chat.
+- השתמש ב-add רק כשהמשתמש מזכיר פריטי מזון/קניות ברורים שרוצה להוסיף.
+- אם המשתמש מתייחס לפריט שנמצא ברשימה ורוצה לעדכן פרטים (מותג, כמות, הערה) — השתמש ב-update.
+- עבור update, החזר items כמערך של אובייקטים עם name ושדות אופציונליים: brand, quantity, unit, detail.
+- עבור שאר הפעולות, items הוא מערך של מחרוזות.
+
+ענה אך ורק ב-JSON תקין, ללא הסבר נוסף.
+"""
+
+
+def _parse_intent_response(raw: str) -> dict | None:
+    """Parse and validate an LLM intent response.
+
+    Returns a normalized dict with 'action' and 'items', or None on failure.
+    """
+    parsed = extract_json(raw)
+
+    if not isinstance(parsed, dict):
+        logger.warning("LLM intent returned non-dict: %s", raw[:200])
+        return None
+
+    action = parsed.get("action")
+    items = parsed.get("items", [])
+
+    valid_actions = {
+        "add", "remove", "done", "update",
+        "list", "sort", "clear", "help", "chat",
+    }
+    if action not in valid_actions:
+        logger.warning("LLM returned unknown action '%s'", action)
+        return None
+
+    # For "update" action, items can be a list of dicts with name + detail fields
+    if action == "update":
+        if not isinstance(items, list):
+            items = []
+        normalized_items: list[dict] = []
+        for item in items:
+            if isinstance(item, dict) and item.get("name"):
+                normalized_items.append({
+                    "name": str(item["name"]).strip(),
+                    "brand": str(item["brand"]).strip() if item.get("brand") else None,
+                    "quantity": str(item["quantity"]).strip() if item.get("quantity") else None,
+                    "unit": str(item["unit"]).strip() if item.get("unit") else None,
+                    "detail": str(item["detail"]).strip() if item.get("detail") else None,
+                })
+            elif isinstance(item, str) and item.strip():
+                normalized_items.append({"name": item.strip()})
+        logger.info("LLM intent: action=%s, items=%s", action, normalized_items)
+        return {"action": action, "items": normalized_items}
+
+    # For other actions, normalize items to list of strings
+    if not isinstance(items, list):
+        items = []
+    items = [str(i).strip() for i in items if i and str(i).strip()]
+
+    logger.info("LLM intent: action=%s, items=%s", action, items)
+    return {"action": action, "items": items}
 
 
 async def understand_intent(text: str) -> dict | None:
@@ -750,8 +882,8 @@ async def understand_intent(text: str) -> dict | None:
     Use LLM to understand user intent from natural language.
 
     Returns a dict with keys: action, items.
-    action is one of: add, remove, done, list, sort, clear, help, unknown.
-    items is a list of item name strings (may be empty).
+    action is one of: add, remove, done, update, list, sort, clear, help, chat.
+    items is a list of item name strings (or dicts for 'update' action).
 
     Returns None if the LLM is unavailable or fails.
     """
@@ -762,34 +894,54 @@ async def understand_intent(text: str) -> dict | None:
         prompt=f'"{text}"',
         system=_INTENT_SYSTEM,
         temperature=0.1,
-        max_tokens=200,
+        max_tokens=300,
         json_mode=True,
     )
 
     if raw is None:
         return None
 
-    parsed = extract_json(raw)
+    return _parse_intent_response(raw)
 
-    if not isinstance(parsed, dict):
-        logger.warning("LLM intent returned non-dict: %s", raw[:200])
+
+async def understand_intent_with_context(
+    text: str,
+    list_item_names: list[str],
+) -> dict | None:
+    """
+    Use LLM to understand user intent, with awareness of current list items.
+
+    Injects the current list items into the prompt so the LLM can recognize
+    references to existing items and return 'update' intents.
+
+    Args:
+        text: The user's message text.
+        list_item_names: Names of items currently in the grocery list.
+
+    Returns a dict with keys: action, items (same format as understand_intent).
+    Falls back to understand_intent() if list is empty.
+    """
+    if not text or not text.strip():
         return None
 
-    action = parsed.get("action")
-    items = parsed.get("items", [])
+    if not list_item_names:
+        return await understand_intent(text)
 
-    valid_actions = {"add", "remove", "done", "list", "sort", "clear", "help", "unknown"}
-    if action not in valid_actions:
-        logger.warning("LLM returned unknown action '%s'", action)
+    items_str = ", ".join(list_item_names)
+    system_prompt = _INTENT_WITH_CONTEXT_SYSTEM.format(list_items=items_str)
+
+    raw = await _llm_generate(
+        prompt=f'"{text}"',
+        system=system_prompt,
+        temperature=0.1,
+        max_tokens=300,
+        json_mode=True,
+    )
+
+    if raw is None:
         return None
 
-    # Normalize items to list of strings
-    if not isinstance(items, list):
-        items = []
-    items = [str(i).strip() for i in items if i and str(i).strip()]
-
-    logger.info("LLM intent: action=%s, items=%s", action, items)
-    return {"action": action, "items": items}
+    return _parse_intent_response(raw)
 
 
 # ── Availability checks ──────────────────────────────────────────

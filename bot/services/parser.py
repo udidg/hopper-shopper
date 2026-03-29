@@ -55,6 +55,25 @@ def parse_items_text(text: str) -> list[str]:
     return unique_items
 
 
+# Common conversational words/phrases that should NOT be treated as grocery items
+_CHAT_WORDS = {
+    "ok", "אוקי", "אוקיי", "בסדר", "סבבה", "תודה", "תודה רבה", "thanks",
+    "אחלה", "יופי", "מעולה", "סגור", "נהדר", "כן", "לא", "אולי", "בטח",
+    "שלום", "היי", "הי", "ביי", "להתראות", "בוקר טוב", "ערב טוב",
+    "לילה טוב", "מה קורה", "מה נשמע", "מה שלומך", "מה העניינים",
+    "lol", "haha", "😂", "👍", "❤️", "🙏", "😊", "👌",
+}
+
+
+def _is_conversational(text: str) -> bool:
+    """Check if a short text is likely conversational rather than a grocery item."""
+    cleaned = text.strip().lower().rstrip("!?.…")
+    # Emoji-only messages
+    if all(not c.isalnum() and not c.isspace() for c in cleaned) and cleaned:
+        return True
+    return cleaned in _CHAT_WORDS
+
+
 def looks_like_grocery_list(text: str) -> bool:
     """
     Heuristic: does this message look like a grocery list?
@@ -67,6 +86,10 @@ def looks_like_grocery_list(text: str) -> bool:
 
     # Skip messages that look like commands or URLs
     if text.startswith("/") or text.startswith("http"):
+        return False
+
+    # Skip short conversational messages
+    if _is_conversational(text):
         return False
 
     lines = [l.strip() for l in text.strip().split("\n") if l.strip()]

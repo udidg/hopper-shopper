@@ -625,6 +625,53 @@ async def set_item_price(
     return None
 
 
+async def update_item_details(
+    session: AsyncSession,
+    list_id: int,
+    chat_id: int,
+    item_name: str,
+    brand: str | None = None,
+    quantity: str | None = None,
+    unit: str | None = None,
+    detail: str | None = None,
+) -> GroceryItem | None:
+    """Update details on an existing item in the list.
+
+    Uses fuzzy matching to find the item. Only updates fields that are
+    provided (non-None). Also updates ItemHistory default_detail if a
+    detail or brand is provided.
+
+    Returns the updated item, or None if not found.
+    """
+    items = await _fuzzy_find_items(session, list_id, item_name)
+
+    if not items:
+        return None
+
+    item = items[0]
+
+    if brand is not None:
+        item.brand = brand
+    if quantity is not None:
+        item.quantity = quantity
+    if unit is not None:
+        item.unit = unit
+    if detail is not None:
+        item.description = detail
+    elif brand is not None and not item.description:
+        # If brand is set but no explicit detail, use brand as description
+        item.description = brand
+
+    await session.flush()
+
+    # Also update history default_detail for future adds
+    saved_detail = detail or brand
+    if saved_detail:
+        await set_item_detail(session, chat_id, item.name, saved_detail)
+
+    return item
+
+
 # ── Item history (for suggestions & details) ─────────────────────
 
 

@@ -25,6 +25,7 @@ from bot.services.list_manager import (
     items_to_dicts,
     mark_item_done,
     remove_items,
+    update_item_details,
 )
 from bot.services.parser import looks_like_grocery_list, parse_items_text
 from bot.utils.db import db_session_with_retry
@@ -43,13 +44,29 @@ async def _send_typing(update: Update) -> None:
         pass  # Non-critical — don't fail if typing indicator fails
 
 
-async def _try_intent_understanding(text: str, update: Update) -> dict | None:
-    """Try to understand user intent via LLM. Returns None if unavailable."""
+async def _try_intent_understanding(
+    text: str,
+    update: Update,
+    list_item_names: list[str] | None = None,
+) -> dict | None:
+    """Try to understand user intent via LLM.
+
+    If list_item_names is provided, uses context-aware intent understanding
+    so the LLM can recognize references to existing items.
+
+    Returns None if unavailable.
+    """
     try:
-        from bot.services.llm import is_llm_available, understand_intent
+        from bot.services.llm import (
+            is_llm_available,
+            understand_intent,
+            understand_intent_with_context,
+        )
 
         if await is_llm_available():
             await _send_typing(update)
+            if list_item_names:
+                return await understand_intent_with_context(text, list_item_names)
             return await understand_intent(text)
     except Exception:
         logger.debug("Intent understanding failed", exc_info=True)
@@ -300,6 +317,87 @@ async def _handle_help_action(update: Update) -> None:
     await update.message.reply_text(format_help())
 
 
+async def _handle_update_action(update: Update, items: list[dict]) -> None:
+    """Handle updating details on existing items in the list.
+
+    Each item in the list is a dict with 'name' and optional
+    'brand', 'quantity', 'unit', 'detail' fields.
+    """
+    if not items or not update.message:
+        return
+
+    updated_names: list[str] = []
+    not_found_names: list[str] = []
+
+    try:
+        async with db_session_with_retry() as session:
+            _, grocery_list = await _get_user_and_list(update, session)
+            chat_id = update.effective_chat.id
+
+            for item_info in items:
+                name = item_info.get("name", "").strip()
+                if not name:
+                    continue
+
+                updated = await update_item_details(
+                    session,
+                    list_id=grocery_list.id,
+                    chat_id=chat_id,
+                    item_name=name,
+                    brand=item_info.get("brand"),
+                    quantity=item_info.get("quantity"),
+                    unit=item_info.get("unit"),
+                    detail=item_info.get("detail"),
+                )
+
+                if updated:
+                    # Build a summary of what was updated
+                    parts = [updated.name]
+                    if item_info.get("brand"):
+                        parts.append(f"🏷️ {item_info['brand']}")
+                    if item_info.get("quantity"):
+                        qty = item_info["quantity"]
+                        if item_info.get("unit"):
+                            qty += f" {item_info['unit']}"
+                        parts.append(f"📏 {qty}")
+                    if item_info.get("detail"):
+                        parts.append(f"📝 {item_info['detail']}")
+                    updated_names.append(" — ".join(parts))
+                else:
+                    not_found_names.append(name)
+    except Exception:
+        logger.exception("Database error updating items")
+        await update.message.reply_text(DB_ERROR_MSG)
+        return
+
+    response_parts: list[str] = []
+    if updated_names:
+        if len(updated_names) == 1:
+            response_parts.append(f"✏️ עודכן: {updated_names[0]}")
+        else:
+            items_text = "\n".join(f"  • {n}" for n in updated_names)
+            response_parts.append(f"✏️ {len(updated_names)} פריטים עודכנו:\n{items_text}")
+
+    if not_found_names:
+        names_str = ", ".join(not_found_names)
+        response_parts.append(f"❌ לא נמצאו ברשימה: {names_str}")
+
+    if response_parts:
+        await update.message.reply_text("\n\n".join(response_parts))
+
+
+async def _get_list_item_names_for_context(update: Update) -> list[str]:
+    """Fetch current list item names for LLM context. Returns empty list on failure."""
+    try:
+        async with db_session_with_retry() as session:
+            _, grocery_list = await _get_user_and_list(update, session)
+            items = await get_list_items(session, grocery_list.id)
+            return [item.name for item in items if not item.is_done]
+    except Exception:
+        logger.debug("Failed to fetch list items for context", exc_info=True)
+        return []
+
+
 async def handle_text_message(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -307,9 +405,11 @@ async def handle_text_message(
     Handle plain text messages.
 
     Pipeline:
-    1. Try LLM intent understanding (natural language commands)
-    2. If intent is "add" or looks like a grocery list, try LLM smart parsing
-    3. Fall back to regex-based parsing
+    1. Fetch current list items for LLM context
+    2. Try LLM intent understanding with list context
+    3. Handle recognized intents (add, remove, done, update, list, sort, clear, help)
+    4. Silently ignore chat/unknown intents
+    5. Fall back to heuristic grocery list detection + regex parsing
     """
     if not update.message or not update.message.text:
         return
@@ -320,10 +420,13 @@ async def handle_text_message(
     if text.startswith("/"):
         return
 
-    # ── Step 1: Try LLM intent understanding ──────────────────────
-    intent = await _try_intent_understanding(text, update)
+    # ── Step 1: Fetch current list items for context ──────────────
+    list_item_names = await _get_list_item_names_for_context(update)
 
-    if intent and intent["action"] != "unknown":
+    # ── Step 2: Try LLM intent understanding (with list context) ──
+    intent = await _try_intent_understanding(text, update, list_item_names)
+
+    if intent and intent["action"] not in ("unknown", "chat"):
         action = intent["action"]
         items = intent.get("items", [])
 
@@ -345,6 +448,10 @@ async def handle_text_message(
             await _handle_done_action(update, items)
             return
 
+        if action == "update" and items:
+            await _handle_update_action(update, items)
+            return
+
         if action == "list":
             await _handle_list_action(update)
             return
@@ -361,17 +468,21 @@ async def handle_text_message(
             await _handle_help_action(update)
             return
 
-    # ── Step 2: Check if it looks like a grocery list ─────────────
+    # If LLM recognized it as chat or unknown, silently ignore
+    if intent and intent["action"] in ("chat", "unknown"):
+        return
+
+    # ── Step 3: Check if it looks like a grocery list ─────────────
     if not looks_like_grocery_list(text):
         return
 
-    # ── Step 3: Try LLM smart parsing ────────────────────────────
+    # ── Step 4: Try LLM smart parsing ────────────────────────────
     parsed_items = await _try_smart_parse(text, update)
     if parsed_items and len(parsed_items) >= 1:
         await _handle_add_action(update, parsed_items=parsed_items, auto_sort=True)
         return
 
-    # ── Step 4: Fall back to regex parsing ────────────────────────
+    # ── Step 5: Fall back to regex parsing ────────────────────────
     item_names = parse_items_text(text)
     if not item_names or len(item_names) < 2:
         return
